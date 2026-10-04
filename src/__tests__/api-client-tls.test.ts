@@ -41,7 +41,7 @@ describe("CwManageClient TLS dispatcher (no process.env mutation)", () => {
     const fetchMock = vi.fn().mockResolvedValue(fakeResponse({ ok: true }));
     vi.stubGlobal("fetch", fetchMock);
 
-    const client = new CwManageClient(baseConfig);
+    const client = new CwManageClient({ ...baseConfig, rejectUnauthorized: process.env.CW_MANAGE_REJECT_UNAUTHORIZED !== "false" });
     await client.get("/system/info");
 
     expect(process.env.NODE_TLS_REJECT_UNAUTHORIZED).toBeUndefined();
@@ -51,7 +51,7 @@ describe("CwManageClient TLS dispatcher (no process.env mutation)", () => {
     const fetchMock = vi.fn().mockResolvedValue(fakeResponse({ ok: true }));
     vi.stubGlobal("fetch", fetchMock);
 
-    const client = new CwManageClient(baseConfig);
+    const client = new CwManageClient({ ...baseConfig, rejectUnauthorized: process.env.CW_MANAGE_REJECT_UNAUTHORIZED !== "false" });
     await client.get("/system/info");
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -64,7 +64,7 @@ describe("CwManageClient TLS dispatcher (no process.env mutation)", () => {
     const fetchMock = vi.fn().mockResolvedValue(fakeResponse({ ok: true }));
     vi.stubGlobal("fetch", fetchMock);
 
-    const client = new CwManageClient(baseConfig);
+    const client = new CwManageClient({ ...baseConfig, rejectUnauthorized: process.env.CW_MANAGE_REJECT_UNAUTHORIZED !== "false" });
     await client.get("/system/info");
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -77,7 +77,7 @@ describe("CwManageClient TLS dispatcher (no process.env mutation)", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     process.env.CW_MANAGE_REJECT_UNAUTHORIZED = "false";
-    const selfHostedClient = new CwManageClient({ ...baseConfig, clientId: "self-hosted" });
+    const selfHostedClient = new CwManageClient({ ...baseConfig, rejectUnauthorized: false, clientId: "self-hosted" });
 
     delete process.env.CW_MANAGE_REJECT_UNAUTHORIZED;
     const cloudClient = new CwManageClient({ ...baseConfig, clientId: "cloud" });

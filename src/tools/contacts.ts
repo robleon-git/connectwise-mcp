@@ -52,38 +52,4 @@ export function registerContactTools(server: McpServer, client: CwManageClient) 
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     },
   );
-
-  server.tool(
-    "cw_create_contact",
-    "Create a new contact.",
-    {
-      firstName: z.string().describe("First name"),
-      lastName: z.string().describe("Last name"),
-      companyId: z.number().describe("Company ID to associate the contact with"),
-      email: z.string().optional().describe("Email address"),
-      phone: z.string().optional().describe("Phone number"),
-      title: z.string().optional().describe("Job title"),
-    },
-    async ({ firstName, lastName, companyId, email, phone, title }) => {
-      const body: Record<string, unknown> = {
-        firstName,
-        lastName,
-        company: { id: companyId },
-      };
-      if (title) body.title = title;
-
-      // CW Manage uses communicationItems for email/phone
-      const comms: Array<Record<string, unknown>> = [];
-      if (email) {
-        comms.push({ type: { name: "Email" }, value: email, communicationType: "Email" });
-      }
-      if (phone) {
-        comms.push({ type: { name: "Direct" }, value: phone, communicationType: "Phone" });
-      }
-      if (comms.length) body.communicationItems = comms;
-
-      const result = await client.post("/company/contacts", body);
-      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-    },
-  );
 }

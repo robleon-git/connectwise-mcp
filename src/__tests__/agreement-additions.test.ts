@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, vi, afterEach } from "vitest";
-import worker from "../worker.js";
+import worker from "./worker-fixture.js";
 import { applyPatchLocally } from "../tools/agreements.js";
 
 const GATEWAY_HEADERS = {
@@ -17,14 +17,6 @@ const GATEWAY_HEADERS = {
   "X-CW-Client-Id": "client-guid",
 };
 
-function fakeResponse(body: unknown, status = 200): Response {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    text: () => Promise.resolve(body === undefined ? "" : JSON.stringify(body)),
-    json: () => Promise.resolve(body),
-  } as unknown as Response;
-}
 
 async function mcp(method: string, params: unknown, id = 1): Promise<Record<string, unknown>> {
   const res = await worker.fetch(
@@ -39,11 +31,6 @@ async function mcp(method: string, params: unknown, id = 1): Promise<Record<stri
   return (await res.json()) as Record<string, unknown>;
 }
 
-function toolText(body: Record<string, unknown>): string {
-  const result = body.result as { content?: { text?: string }[]; isError?: boolean } | undefined;
-  expect(result?.isError).not.toBe(true);
-  return result?.content?.[0]?.text ?? "";
-}
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -70,107 +57,44 @@ describe("applyPatchLocally", () => {
 });
 
 describe("agreement addition tools", () => {
-  it("exposes cw_update_agreement_addition and cw_create_agreement_addition", async () => {
+  it("does not expose agreement addition writes", async () => {
     const body = await mcp("tools/list", {});
     const tools = (body.result as { tools: { name: string; inputSchema?: { properties?: Record<string, unknown> } }[] }).tools;
     const byName = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
 
-    expect(byName.cw_update_agreement_addition).toBeDefined();
-    expect(byName.cw_update_agreement_addition.inputSchema?.properties).toHaveProperty("dryRun");
-    expect(byName.cw_create_agreement_addition).toBeDefined();
-    expect(byName.cw_create_agreement_addition.inputSchema?.properties).toHaveProperty("billCustomer");
+    expect(byName.cw_update_agreement_addition).toBeUndefined();
+    expect(byName.cw_create_agreement_addition).toBeUndefined();
   });
 
-  it("patches an addition (weekly seat-count reconciliation)", async () => {
-    const fetchMock = vi.fn().mockResolvedValueOnce(fakeResponse({ id: 9, quantity: 12 }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    const updated = await mcp("tools/call", {
-      name: "cw_update_agreement_addition",
-      arguments: {
-        agreementId: 4,
-        additionId: 9,
-        operations: [{ op: "replace", path: "quantity", value: 12 }],
-      },
-    });
-
-    expect(JSON.parse(toolText(updated))).toEqual({ id: 9, quantity: 12 });
-    const [url, init] = fetchMock.mock.calls[0] as [string, { method: string; body: string }];
-    expect(url).toContain("/finance/agreements/4/additions/9");
-    expect(init.method).toBe("PATCH");
-    expect(JSON.parse(init.body)).toEqual([{ op: "replace", path: "quantity", value: 12 }]);
-  });
-
-  it("rejects an add/replace operation missing value (RFC 6902 requires it)", async () => {
+  it("rejects addition updates", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
-
-    const body = await mcp("tools/call", {
-      name: "cw_update_agreement_addition",
-      arguments: {
-        agreementId: 4,
-        additionId: 9,
-        operations: [{ op: "replace", path: "quantity" }],
-      },
-    });
-
-    const result = body.result as { content?: { text?: string }[]; isError?: boolean };
-    expect(result.isError).toBe(true);
-    expect(result.content?.[0]?.text).toMatch(/value is required/i);
+    const body = await mcp("tools/call", {name: "cw_update_agreement_addition", arguments: {}});
+    expect(JSON.stringify(body)).toMatch(/not found/i);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("dryRun fetches the current addition, previews the patch, and makes no write", async () => {
-    const fetchMock = vi.fn().mockResolvedValueOnce(
-      fakeResponse({ id: 9, quantity: 5, billCustomer: "Billable" }),
-    );
+  it("rejects malformed calls to removed update tools", async () => {
+    const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
-
-    const previewed = await mcp("tools/call", {
-      name: "cw_update_agreement_addition",
-      arguments: {
-        agreementId: 4,
-        additionId: 9,
-        operations: [{ op: "replace", path: "quantity", value: 12 }],
-        dryRun: true,
-      },
-    });
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchMock.mock.calls[0] as [string, { method?: string }];
-    expect(url).toContain("/finance/agreements/4/additions/9");
-    expect(init.method ?? "GET").toBe("GET");
-    expect(JSON.parse(toolText(previewed))).toEqual({
-      dryRun: true,
-      saved: false,
-      preview: { id: 9, quantity: 12, billCustomer: "Billable" },
-    });
+    const body = await mcp("tools/call", {name: "cw_update_agreement_addition", arguments: {}});
+    expect(JSON.stringify(body)).toMatch(/not found/i);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("creates an addition", async () => {
-    const fetchMock = vi.fn().mockResolvedValueOnce(
-      fakeResponse({ id: 15, product: { id: 200 }, billCustomer: "Billable", quantity: 3 }),
-    );
+  it("rejects even dry-run calls to removed update tools", async () => {
+    const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
+    const body = await mcp("tools/call", {name: "cw_update_agreement_addition", arguments: {}});
+    expect(JSON.stringify(body)).toMatch(/not found/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 
-    const created = await mcp("tools/call", {
-      name: "cw_create_agreement_addition",
-      arguments: {
-        agreementId: 4,
-        productId: 200,
-        billCustomer: "Billable",
-        quantity: 3,
-      },
-    });
-
-    expect(JSON.parse(toolText(created))).toMatchObject({ id: 15 });
-    const [url, init] = fetchMock.mock.calls[0] as [string, { method: string; body: string }];
-    expect(url).toContain("/finance/agreements/4/additions");
-    expect(init.method).toBe("POST");
-    expect(JSON.parse(init.body)).toEqual({
-      product: { id: 200 },
-      billCustomer: "Billable",
-      quantity: 3,
-    });
+  it("rejects addition creates", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const body = await mcp("tools/call", {name: "cw_create_agreement_addition", arguments: {}});
+    expect(JSON.stringify(body)).toMatch(/not found/i);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

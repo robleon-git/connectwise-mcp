@@ -46,7 +46,6 @@ tests
 docs
 README.md
 CHANGELOG.md
-LICENSE
 *.md
 
 # Configuration files not needed in container

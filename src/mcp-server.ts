@@ -6,9 +6,9 @@
  * - `index.ts`  — stdio + Node HTTP transport
  * - `worker.ts` — Cloudflare Workers (Web Standard) transport
  *
- * Credentials are resolved per request, in order:
- * 1. An explicit `CwManageConfig` override (gateway mode / Workers headers).
- * 2. `getConfig()` reading from `process.env` (env mode).
+ * Configuration is supplied by the service, or environment variables for stdio.
+ * An explicit null prevents fallback to the process environment.
+ * Remote transports reject caller-supplied ConnectWise credentials.
  *
  * `tools/list` and `initialize` work without credentials; when no config is
  * available, only a single diagnostic `cw_test_connection` tool is registered,
@@ -34,67 +34,16 @@ import { registerOpportunityTools } from "./tools/opportunities.js";
 
 export type { CwManageConfig };
 
-/**
- * Build a validated CwManageConfig from raw values.
- * Returns `{ config }` on success or `{ error }` when required fields are
- * missing. Shared by every transport (Node HTTP headers, Workers headers).
- */
-export function buildConfig(
-  companyId: string | undefined,
-  publicKey: string | undefined,
-  privateKey: string | undefined,
-  clientId: string | undefined,
-  baseUrl?: string,
-): { config?: CwManageConfig; error?: string } {
-  if (!companyId || !publicKey || !privateKey || !clientId) {
-    return {
-      error:
-        "Missing credentials: X-CW-Company-Id, X-CW-Public-Key, X-CW-Private-Key, X-CW-Client-Id (or CW_MANAGE_* environment variables)",
-    };
-  }
-
-  const resolvedBaseUrl = (
-    baseUrl || "https://api-na.myconnectwise.net"
-  ).replace(/\/+$/, "");
-
-  return {
-    config: {
-      baseUrl: resolvedBaseUrl,
-      companyId,
-      publicKey,
-      privateKey,
-      clientId,
-    },
-  };
-}
-
-/**
- * Resolve per-request gateway credentials from a header accessor.
- *
- * Works with any transport: pass a getter that returns a (lowercased) header
- * value. Returns `{ config }` on success, or `{ error }` when required headers
- * are missing.
- */
-export function resolveGatewayConfig(
-  getHeader: (lowerName: string) => string | undefined,
-): { config?: CwManageConfig; error?: string } {
-  return buildConfig(
-    getHeader("x-cw-company-id"),
-    getHeader("x-cw-public-key"),
-    getHeader("x-cw-private-key"),
-    getHeader("x-cw-client-id"),
-    getHeader("x-cw-url"),
-  );
-}
+export { buildConfig, resolveGatewayConfig } from "./config.js";
 
 /**
  * Create a fresh MCP server instance with all handlers registered.
  * Called once for stdio, or per-request for HTTP / Workers transports.
  *
- * @param configOverride - Optional config (gateway mode / Workers headers).
+ * @param configOverride - Optional service configuration; null means unconfigured.
  *   When provided, the client is built from it instead of reading process.env.
  */
-export function createMcpServer(configOverride?: CwManageConfig): McpServer {
+export function createMcpServer(configOverride?: CwManageConfig | null): McpServer {
   const server = new McpServer({
     name: "connectwise-manage-mcp",
     version: "1.4.0",
@@ -104,7 +53,7 @@ export function createMcpServer(configOverride?: CwManageConfig): McpServer {
   // is served with or without credentials (hosts may prefetch it).
   registerCardResources(server);
 
-  const config = configOverride ?? getConfig();
+  const config = configOverride === undefined ? getConfig() : configOverride;
 
   if (!config) {
     // Register a single diagnostic tool so the client gets a clear error

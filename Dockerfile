@@ -19,7 +19,7 @@ RUN npm ci --ignore-scripts
 COPY . .
 
 # Build the application
-RUN npm run build
+RUN npm run build:ui && npm run build
 
 # Production stage
 FROM node:26-alpine AS production
@@ -32,12 +32,12 @@ RUN addgroup -g 1001 -S cwmanage && \
 WORKDIR /app
 
 # Copy package files and built application from builder stage
-COPY package*.json ./
+COPY package*.json LICENSE ./
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 
 # Prune dev dependencies
-RUN npm prune --omit=dev && npm cache clean --force
+RUN npm prune --omit=dev --ignore-scripts && npm cache clean --force
 
 # Create logs directory
 RUN mkdir -p /app/logs && chown -R cwmanage:cwmanage /app
@@ -67,7 +67,7 @@ VOLUME ["/app/logs"]
 CMD ["node", "dist/index.js"]
 
 # Labels for metadata
-LABEL maintainer="engineering@wyre.ai"
+LABEL maintainer="robleon-git"
 LABEL version="${VERSION}"
 LABEL description="ConnectWise Manage MCP Server - Model Context Protocol server for ConnectWise PSA"
 LABEL org.opencontainers.image.title="connectwise-manage-mcp"
@@ -75,7 +75,7 @@ LABEL org.opencontainers.image.description="Model Context Protocol server for Co
 LABEL org.opencontainers.image.version="${VERSION}"
 LABEL org.opencontainers.image.created="${BUILD_DATE}"
 LABEL org.opencontainers.image.revision="${COMMIT_SHA}"
-LABEL org.opencontainers.image.source="https://github.com/WYRE-AI/connectwise-manage-mcp"
+LABEL org.opencontainers.image.source="https://github.com/robleon-git/connectwise-mcp"
 LABEL org.opencontainers.image.vendor="Wyre Technology"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 LABEL io.modelcontextprotocol.server.name="io.github.WYRE-AI/connectwise-manage-mcp"

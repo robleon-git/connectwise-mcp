@@ -1,3 +1,5 @@
+> **Phase 1 fork hardening:** This fork exposes 39 read-only tools. Remote HTTP is blocked until a standards-compliant authentication adapter is integrated. Gateway credentials and inherited OAuth proxy routes are disabled. See [PHASE1_HARDENING.md](docs/PHASE1_HARDENING.md); historical upstream deployment/authentication instructions below do not override these defaults.
+
 # ConnectWise Manage MCP Server
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)

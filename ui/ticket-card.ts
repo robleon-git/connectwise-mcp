@@ -63,7 +63,6 @@ function applyBrand(): void {
 }
 
 const app = new App({ name: "ConnectWise Manage Ticket Card", version: "1.0.0" });
-let current: TicketCard | null = null;
 
 /** Create an element with a class and (safe, text-node) children. */
 function el(
@@ -114,7 +113,6 @@ function noteEl(n: { who?: string; text: string; internal?: boolean }): HTMLElem
 }
 
 function render(t: TicketCard): void {
-  current = t;
 
   // Brand identity only renders when a brand was injected — the neutral
   // default shows just the ticket number/vendor context in the header.
@@ -134,46 +132,6 @@ function render(t: TicketCard): void {
   const notesSection = el("div", "notes", el("div", "notes__h", `Notes (${t.notes.length})`));
   for (const n of t.notes) notesSection.append(noteEl(n));
 
-  if (t.noteDefaults) {
-    const input = document.createElement("input");
-    input.id = "note-input";
-    input.type = "text";
-    input.placeholder = "Add an internal note to this ticket…";
-    const btn = el("button", "btn", "Add note") as HTMLButtonElement;
-    btn.id = "note-btn";
-
-    const submit = async () => {
-      const text = input.value.trim();
-      if (!text || !current?.noteDefaults) return;
-      btn.disabled = true;
-      btn.textContent = "Adding…";
-      try {
-        // The server resolved a safe internal-only visibility default into
-        // noteDefaults (internalAnalysisFlag); the card never guesses
-        // visibility itself.
-        await app.callServerTool({
-          name: "cw_add_ticket_note",
-          arguments: {
-            id: current.id,
-            text,
-            internalAnalysisFlag: current.noteDefaults.internalAnalysisFlag,
-          },
-        });
-        // The note tool returns the created note, not the ticket — append
-        // optimistically and re-render.
-        current.notes = [...current.notes, { text, internal: true }];
-        render(current);
-      } catch {
-        btn.disabled = false;
-        btn.textContent = "Add note";
-      }
-    };
-    btn.addEventListener("click", submit);
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") submit();
-    });
-    notesSection.append(el("div", "addnote", input, btn));
-  }
 
   const body = el(
     "div",

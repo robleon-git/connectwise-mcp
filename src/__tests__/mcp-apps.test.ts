@@ -12,7 +12,7 @@
  */
 
 import { describe, it, expect, vi, afterEach } from "vitest";
-import worker from "../worker.js";
+import worker from "./worker-fixture.js";
 import {
   buildTicketCard,
   applyBrandInjection,
@@ -21,7 +21,7 @@ import {
 } from "../card.builder.js";
 import { TICKET_CARD_HTML } from "../generated/ticket-card-html.js";
 
-const RENDERABLE_TOOLS = ["cw_get_ticket", "cw_add_ticket_note"];
+const RENDERABLE_TOOLS = ["cw_get_ticket"];
 
 const MCP_HEADERS = {
   Accept: "application/json, text/event-stream",
@@ -78,6 +78,10 @@ describe("MCP Apps ticket card", () => {
       expect((tool?._meta?.ui as { resourceUri?: string })?.resourceUri).toBe(
         TICKET_CARD_RESOURCE_URI,
       );
+    });
+
+    it("does not advertise the removed note tool", async () => {
+      expect((await listTools()).find(tool => tool.name === "cw_add_ticket_note")).toBeUndefined();
     });
 
     it("no other tools carry UI metadata", async () => {
@@ -228,9 +232,10 @@ describe("MCP Apps ticket card", () => {
       );
     });
 
-    it("defaults the add-note round-trip to internal-only visibility", async () => {
+    it("omits the disabled add-note capability", async () => {
       const card = await buildTicketCard(ticket, client);
-      expect(card?.noteDefaults).toEqual({ internalAnalysisFlag: true });
+      expect(card?.noteDefaults).toBeUndefined();
+      expect(TICKET_CARD_HTML).not.toContain("cw_add_ticket_note");
     });
 
     it("falls back to identifier/#id labels when names are missing", async () => {
@@ -309,7 +314,7 @@ describe("MCP Apps ticket card", () => {
         status: "New",
         company: "Acme Corp",
         notes: [{ who: "druiz", text: "First note" }],
-        noteDefaults: { internalAnalysisFlag: true },
+
       });
     });
 

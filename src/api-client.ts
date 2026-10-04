@@ -20,31 +20,9 @@
  */
 import { Agent } from "undici";
 
-export interface CwManageConfig {
-  baseUrl: string;
-  companyId: string;
-  publicKey: string;
-  privateKey: string;
-  clientId: string;
-}
-
-export function getConfig(): CwManageConfig | null {
-  const companyId = process.env.CW_MANAGE_COMPANY_ID;
-  const publicKey = process.env.CW_MANAGE_PUBLIC_KEY;
-  const privateKey = process.env.CW_MANAGE_PRIVATE_KEY;
-  const clientId = process.env.CW_MANAGE_CLIENT_ID;
-
-  if (!companyId || !publicKey || !privateKey || !clientId) {
-    return null;
-  }
-
-  // Default to North America cloud. Override for EU, AU, or self-hosted.
-  const baseUrl = (
-    process.env.CW_MANAGE_URL || "https://api-na.myconnectwise.net"
-  ).replace(/\/+$/, "");
-
-  return { baseUrl, companyId, publicKey, privateKey, clientId };
-}
+import { validateConfig, type CwManageConfig } from "./config.js";
+import { ApiRequestError, ConfigurationError } from "./diagnostics.js";
+export { getConfig, type CwManageConfig } from "./config.js";
 
 /**
  * Low-level API client for ConnectWise Manage REST API.
@@ -56,6 +34,7 @@ export class CwManageClient {
   private readonly dispatcher: Agent | undefined;
 
   constructor(config: CwManageConfig) {
+    config = validateConfig(config);
     // Auth: Basic base64("{companyId}+{publicKey}:{privateKey}")
     const credentials = `${config.companyId}+${config.publicKey}:${config.privateKey}`;
     this.authHeader = `Basic ${Buffer.from(credentials).toString("base64")}`;
@@ -75,7 +54,7 @@ export class CwManageClient {
     // global fetch breaks every request when the bundled undici version is
     // incompatible with the one embedded in the running Node runtime.
     this.dispatcher =
-      process.env.CW_MANAGE_REJECT_UNAUTHORIZED === "false"
+      config.rejectUnauthorized === false
         ? new Agent({ connect: { rejectUnauthorized: false } })
         : undefined;
   }
@@ -100,56 +79,60 @@ export class CwManageClient {
       params?: Record<string, string | number | undefined>;
     },
   ): Promise<T> {
-    const url = new URL(`${this.apiBase}${path}`);
+    if (method !== "GET") throw new ConfigurationError("read-only");
+    try {
+      const url = new URL(`${this.apiBase}${path}`);
 
-    if (options?.params) {
-      for (const [key, value] of Object.entries(options.params)) {
-        if (value !== undefined && value !== "") {
-          url.searchParams.set(key, String(value));
+      if (options?.params) {
+        for (const [key, value] of Object.entries(options.params)) {
+          if (value !== undefined && value !== "") {
+            url.searchParams.set(key, String(value));
+          }
         }
       }
+
+      const fetchOptions: RequestInit = {
+        method,
+        redirect: "error",
+        headers: this.defaultHeaders(),
+      };
+
+      // Self-hosted instances with self-signed certificates: the dispatcher
+      // built in the constructor (only when CW_MANAGE_REJECT_UNAUTHORIZED is
+      // "false") scopes rejectUnauthorized to THIS client's connections only,
+      // with no process-global state involved.
+      //
+      // Assigned via a cast rather than a typed `dispatcher` field on
+      // fetchOptions: Node's global fetch/RequestInit types (from the
+      // `undici-types` package bundled with @types/node) declare their own
+      // `Dispatcher` interface, structurally incompatible with the standalone
+      // `undici` package's `Dispatcher` -- a well-known dual-package hazard.
+      // The value is fully compatible at runtime (Node's fetch is undici under
+      // the hood); only the type-checker sees two different declarations.
+      if (this.dispatcher) {
+        (fetchOptions as { dispatcher?: unknown }).dispatcher = this.dispatcher;
+      }
+
+      if (options?.body !== undefined) {
+        fetchOptions.body = JSON.stringify(options.body);
+      }
+
+      const response = await fetch(url.toString(), fetchOptions);
+
+      if (!response.ok) {
+        throw new ApiRequestError(response.status);
+      }
+
+      // Some endpoints return 204 No Content
+      if (response.status === 204) {
+        return undefined as T;
+      }
+
+      return (await response.json()) as T;
+    } catch (error) {
+      if (error instanceof ApiRequestError) throw new ApiRequestError(error.status);
+      throw new ApiRequestError();
     }
-
-    const fetchOptions: RequestInit = {
-      method,
-      headers: this.defaultHeaders(),
-    };
-
-    // Self-hosted instances with self-signed certificates: the dispatcher
-    // built in the constructor (only when CW_MANAGE_REJECT_UNAUTHORIZED is
-    // "false") scopes rejectUnauthorized to THIS client's connections only,
-    // with no process-global state involved.
-    //
-    // Assigned via a cast rather than a typed `dispatcher` field on
-    // fetchOptions: Node's global fetch/RequestInit types (from the
-    // `undici-types` package bundled with @types/node) declare their own
-    // `Dispatcher` interface, structurally incompatible with the standalone
-    // `undici` package's `Dispatcher` -- a well-known dual-package hazard.
-    // The value is fully compatible at runtime (Node's fetch is undici under
-    // the hood); only the type-checker sees two different declarations.
-    if (this.dispatcher) {
-      (fetchOptions as { dispatcher?: unknown }).dispatcher = this.dispatcher;
-    }
-
-    if (options?.body !== undefined) {
-      fetchOptions.body = JSON.stringify(options.body);
-    }
-
-    const response = await fetch(url.toString(), fetchOptions);
-
-    if (!response.ok) {
-      const errorBody = await response.text();
-      throw new Error(
-        `ConnectWise API ${method} ${path} returned ${response.status}: ${errorBody}`,
-      );
-    }
-
-    // Some endpoints return 204 No Content
-    if (response.status === 204) {
-      return undefined as T;
-    }
-
-    return (await response.json()) as T;
   }
 
   /** GET helper */

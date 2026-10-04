@@ -1,6 +1,3 @@
-# Default owner for all files — auto-assigned as reviewer on PRs
-* @asachs01 @wyre-ai/engineering
-
-# Workflows require explicit review — prevents supply-chain attacks via
-# PR-supplied CI config
-/.github/workflows/ @asachs01
+# Fork owner; preserve upstream attribution in LICENSE and package author metadata.
+* @robleon-git
+/.github/workflows/ @robleon-git

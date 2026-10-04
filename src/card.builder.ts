@@ -139,11 +139,7 @@ export async function buildTicketCard(
       id: ticket.id,
       summary: ticket.summary,
       notes: [],
-      // ConnectWise marks internal-only notes with internalAnalysisFlag —
-      // "Internal Analysis" notes are never shown in the customer portal, so
-      // an internal-only default is always safe. The card never guesses
-      // visibility itself.
-      noteDefaults: { internalAnalysisFlag: true },
+
     };
 
     const status = refLabel(ticket.status);

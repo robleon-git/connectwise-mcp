@@ -79,7 +79,7 @@ export async function validateToken(
     ...config.extraAudiences,
   ].filter((a, i, arr) => arr.indexOf(a) === i); // deduplicate
 
-  let lastError: unknown;
+
 
   for (const aud of audiencesToTry) {
     try {
@@ -96,9 +96,6 @@ export async function validateToken(
       // Validate app role
       const roles: string[] = payload.roles ?? [];
       if (!roles.includes(config.requiredRole)) {
-        console.error(
-          `[auth] Role check failed — token has roles: [${roles.join(", ")}], required: ${config.requiredRole}`,
-        );
         throw new AuthError(
           `Access denied: missing required role '${config.requiredRole}'`,
           403,
@@ -120,27 +117,9 @@ export async function validateToken(
       };
     } catch (err) {
       if (err instanceof AuthError) throw err;
-      lastError = err;
+
     }
   }
 
-  // All audiences failed — log the token's actual aud claim for diagnostics
-  try {
-    const parts = token.split(".");
-    if (parts.length === 3) {
-      const decoded = JSON.parse(
-        Buffer.from(parts[1]!, "base64url").toString("utf8"),
-      ) as EntraJwtPayload;
-      console.error(
-        `[auth] JWT validation failed. tokenAudience=${JSON.stringify(decoded.aud)} triedAudiences=${JSON.stringify(audiencesToTry)}`,
-      );
-    }
-  } catch {
-    // ignore decode errors
-  }
-
-  throw new AuthError(
-    `Invalid token: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
-    401,
-  );
+  throw new AuthError("Invalid token", 401);
 }

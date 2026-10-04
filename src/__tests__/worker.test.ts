@@ -7,7 +7,8 @@
  */
 
 import { describe, it, expect } from "vitest";
-import worker, { type Env } from "../worker.js";
+import worker from "./worker-fixture.js";
+import { type Env } from "../worker.js";
 
 const MCP_HEADERS = {
   Accept: "application/json, text/event-stream",
@@ -40,13 +41,13 @@ describe("Cloudflare Worker entrypoint", () => {
     expect(await res.json()).toEqual({ status: "ok" });
   });
 
-  it("answers CORS preflight", async () => {
+  it("rejects unsupported preflight", async () => {
     const res = await worker.fetch(
       new Request("http://worker.local/mcp", { method: "OPTIONS" }),
       {},
     );
-    expect(res.status).toBe(204);
-    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+    expect(res.status).toBe(405);
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBeNull();
   });
 
   it("404s unknown paths", async () => {
@@ -87,7 +88,7 @@ describe("Cloudflare Worker entrypoint", () => {
     expect(names).toContain("cw_test_connection");
   });
 
-  it("lists the full tool set when credentials are supplied via gateway headers", async () => {
+  it("lists the read-only tool set with injected service configuration", async () => {
     const res = await worker.fetch(
       new Request("http://worker.local/mcp", {
         method: "POST",
@@ -108,7 +109,7 @@ describe("Cloudflare Worker entrypoint", () => {
     const names = (body.result?.tools ?? []).map((t) => t.name);
     expect(names).toContain("cw_search_tickets");
     expect(names).toContain("cw_get_ticket");
-    expect(names.length).toBeGreaterThan(10);
+    expect(names).toHaveLength(39);
   });
 
   it("returns a graceful error for a credential-requiring tool when unconfigured", async () => {
@@ -126,7 +127,7 @@ describe("Cloudflare Worker entrypoint", () => {
     expect(body.result?.content?.[0]?.text).toMatch(/credentials/i);
   });
 
-  it("rejects /mcp in gateway mode without credential headers", async () => {
+  it("lists tools from service configuration independently of caller headers", async () => {
     const res = await mcp(
       {
         jsonrpc: "2.0",
@@ -136,6 +137,6 @@ describe("Cloudflare Worker entrypoint", () => {
       },
       { AUTH_MODE: "gateway" },
     );
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(200);
   });
 });

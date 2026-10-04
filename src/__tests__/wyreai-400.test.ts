@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect, vi, afterEach } from "vitest";
-import worker from "../worker.js";
+import worker from "./worker-fixture.js";
 import { buildTicketNoteBody, mapCreatedNoteResponse } from "../tools/note-payload.js";
 import { buildContactSearchQuery } from "../tools/contact-search.js";
 
@@ -39,11 +39,6 @@ async function mcp(method: string, params: unknown, id = 1): Promise<Record<stri
   return (await res.json()) as Record<string, unknown>;
 }
 
-function toolText(body: Record<string, unknown>): string {
-  const result = body.result as { content?: { text?: string }[]; isError?: boolean } | undefined;
-  expect(result?.isError).not.toBe(true);
-  return result?.content?.[0]?.text ?? "";
-}
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -212,76 +207,34 @@ describe("contact search conditions (A3)", () => {
 });
 
 describe("WYREAI-400 tool wiring", () => {
-  it("exposes note email fields, parentTicketId, contact type filters, and time entry update/delete", async () => {
+  it("preserves contact filters and omits write tools", async () => {
     const body = await mcp("tools/list", {});
     const tools = (body.result as { tools: { name: string; description?: string; inputSchema?: { properties?: Record<string, unknown> } }[] }).tools;
     const byName = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
 
-    for (const field of ["emailContactFlag", "emailResourceFlag", "emailCcFlag", "emailCc"]) {
-      expect(byName.cw_add_ticket_note.inputSchema?.properties).toHaveProperty(field);
-    }
-    expect(byName.cw_add_ticket_note.description).toMatch(/omitting them does not email/i);
-    expect(byName.cw_create_ticket.inputSchema?.properties).toHaveProperty("parentTicketId");
+    expect(byName.cw_add_ticket_note).toBeUndefined();
+    expect(byName.cw_create_ticket).toBeUndefined();
     expect(byName.cw_search_contacts.inputSchema?.properties).toHaveProperty("typeName");
     expect(byName.cw_search_contacts.inputSchema?.properties).toHaveProperty("childConditions");
     expect(byName.cw_search_contacts.description).toMatch(/ApiFindCondition/);
-    expect(byName.cw_update_time_entry).toBeDefined();
-    expect(byName.cw_delete_time_entry).toBeDefined();
+    expect(byName.cw_update_time_entry).toBeUndefined();
+    expect(byName.cw_delete_time_entry).toBeUndefined();
   });
 
-  it("posts parentTicketId on create", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(fakeResponse({ id: 77, parentTicketId: 42 }));
+  it("rejects ticket creates", async () => {
+    const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
-
-    await mcp("tools/call", {
-      name: "cw_create_ticket",
-      arguments: { summary: "Child", parentTicketId: 42, companyId: 3 },
-    });
-
-    const [url, init] = fetchMock.mock.calls[0] as [string, { method: string; body: string }];
-    expect(url).toContain("/service/tickets");
-    expect(init.method).toBe("POST");
-    expect(JSON.parse(init.body)).toEqual({
-      summary: "Child",
-      company: { id: 3 },
-      parentTicketId: 42,
-    });
+    const body = await mcp("tools/call", {name: "cw_create_ticket", arguments: {}});
+    expect(JSON.stringify(body)).toMatch(/not found/i);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("posts note email flags and returns visibility that matches the stored internal note", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      fakeResponse({
-        id: 5,
-        text: "please confirm",
-        internalAnalysisFlag: true,
-        detailDescriptionFlag: false,
-        internalFlag: true,
-        externalFlag: true,
-      }),
-    );
+  it("rejects note creates", async () => {
+    const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
-
-    const body = await mcp("tools/call", {
-      name: "cw_add_ticket_note",
-      arguments: {
-        id: 100,
-        text: "please confirm",
-        internalAnalysisFlag: true,
-        emailContactFlag: false,
-      },
-    });
-
-    const [url, init] = fetchMock.mock.calls[0] as [string, { method: string; body: string }];
-    expect(url).toContain("/service/tickets/100/notes");
-    expect(init.method).toBe("POST");
-    expect(JSON.parse(init.body)).toEqual({
-      text: "please confirm",
-      internalAnalysisFlag: true,
-      emailContactFlag: false,
-    });
-    const echoed = JSON.parse(toolText(body)) as { internalFlag: boolean; externalFlag: boolean };
-    expect(echoed.internalFlag).toBe(true);
-    expect(echoed.externalFlag).toBe(false);
+    const body = await mcp("tools/call", {name: "cw_add_ticket_note", arguments: {}});
+    expect(JSON.stringify(body)).toMatch(/not found/i);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("searches contacts by type via childConditions", async () => {
@@ -299,33 +252,11 @@ describe("WYREAI-400 tool wiring", () => {
     expect(params.get("childConditions")).toBe('types/name = "Decision Maker" and types/name="Primary"');
   });
 
-  it("patches and deletes time entries", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(fakeResponse({ id: 8, actualHours: 0.25 }))
-      .mockResolvedValueOnce(fakeResponse(undefined, 204));
+  it("rejects time entry updates", async () => {
+    const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
-
-    const updated = await mcp("tools/call", {
-      name: "cw_update_time_entry",
-      arguments: {
-        id: 8,
-        operations: [{ op: "replace", path: "actualHours", value: 0.25 }],
-      },
-    });
-    expect(JSON.parse(toolText(updated))).toMatchObject({ id: 8, actualHours: 0.25 });
-
-    const [patchUrl, patchInit] = fetchMock.mock.calls[0] as [string, { method: string; body: string }];
-    expect(patchUrl).toContain("/time/entries/8");
-    expect(patchInit.method).toBe("PATCH");
-    expect(JSON.parse(patchInit.body)).toEqual([{ op: "replace", path: "actualHours", value: 0.25 }]);
-
-    const deleted = await mcp("tools/call", {
-      name: "cw_delete_time_entry",
-      arguments: { id: 8 },
-    });
-    const [, deleteInit] = fetchMock.mock.calls[1] as [string, { method: string }];
-    expect(deleteInit.method).toBe("DELETE");
-    expect(JSON.parse(toolText(deleted))).toEqual({ id: 8, deleted: true });
+    const body = await mcp("tools/call", {name: "cw_update_time_entry", arguments: {}});
+    expect(JSON.stringify(body)).toMatch(/not found/i);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

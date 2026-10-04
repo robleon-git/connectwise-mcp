@@ -1,0 +1,61 @@
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { createMcpServer } from "./mcp-server.js";
+import { getConfig, type ConfigProvider, type Environment } from "./config.js";
+import { ConfigurationError, logDiagnostic } from "./diagnostics.js";
+
+/** Verify issuer, audience and caller authorization before resolving any CW secrets.
+ * Throw or return false to deny. A future OAuth integration supplies this callback.
+ */
+export type McpAuthenticator = (request: IncomingMessage) => Promise<boolean>;
+export function requireHttpAuthentication(env: Environment, authenticate?: McpAuthenticator): McpAuthenticator {
+  if (env.AUTH_MODE && env.AUTH_MODE !== "env") throw new ConfigurationError("gateway-disabled");
+  if (authenticate) return authenticate;
+  const host = env.MCP_HTTP_HOST || "0.0.0.0";
+  if (env.MCP_ALLOW_UNAUTHENTICATED_LOCAL === "true" &&
+      ["127.0.0.1", "::1"].includes(host) && env.NODE_ENV !== "production") {
+    return async () => true;
+  }
+  throw new ConfigurationError("http-auth-required");
+}
+
+export function createHttpHandler(options: {
+  authenticate: McpAuthenticator;
+  configProvider?: ConfigProvider;
+  allowedOrigins?: readonly string[];
+}) {
+  return async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    const reply = (status: number, error: string) => {
+      res.writeHead(status, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error }));
+    };
+    try {
+      const path = new URL(req.url || "/", "http://localhost").pathname;
+      if (path === "/health") { reply(200, "ok"); return; }
+      if (path !== "/mcp") { reply(404, "not_found"); return; }
+      if (req.headers.origin && !options.allowedOrigins?.includes(req.headers.origin)) {
+        reply(403, "origin_denied"); return;
+      }
+      // The authentication boundary: no configuration, tools, or transport before this.
+      if (!await options.authenticate(req)) { reply(401, "unauthorized"); return; }
+      if (req.method !== "POST") { reply(405, "method_not_allowed"); return; }
+      if (Object.keys(req.headers).some(name => name.startsWith("x-cw-"))) {
+        reply(400, "per_request_credentials_disabled"); return;
+      }
+      const config = await (options.configProvider ?? getConfig)();
+      if (config?.rejectUnauthorized === false) throw new ConfigurationError("invalid-config");
+      const server = createMcpServer(config);
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined, enableJsonResponse: true,
+      });
+      res.on("close", () => {
+        void Promise.all([transport.close(), server.close()]).catch(error => logDiagnostic("transport.failed", error));
+      });
+      await server.connect(transport);
+      await transport.handleRequest(req, res);
+    } catch (error) {
+      logDiagnostic("transport.failed", error);
+      if (!res.headersSent) reply(500, "internal_error");
+    }
+  };
+}
