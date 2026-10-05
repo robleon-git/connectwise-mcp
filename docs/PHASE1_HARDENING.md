@@ -1,5 +1,7 @@
 # Phase 1 hardening
 
+> **Authentication follow-up, 2026-10-04:** this baseline report is historical. Descope verification is now composed at `createHttpHandler({ authenticate, configProvider, allowedOrigins, authConfig })`, with public path-qualified PRM and sanitized typed 401/403 challenges. Authentication still precedes configuration. Missing/incomplete settings fail startup; direct Entra and generic Descope tokens are rejected. All 39 reads/16 absent writes and GET-only enforcement remain. See [current implementation and live gates](CHATGPT_DESCOPE_MCP_LIVE_TEST.md). No Azure deployment or Key Vault integration occurred.
+
 Implemented against reviewed upstream commit `7629ede790f799df395a7f49a0352953d4046c1d`. No deployment, Azure resources, Key Vault integration, new identity protocol, or commit was performed. This service remains independent of Monotorr: no Monotorr code, database, credentials, tenancy, or billing integration was added.
 
 ## Read-only surface

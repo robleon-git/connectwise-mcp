@@ -3,11 +3,12 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { createMcpServer } from "./mcp-server.js";
 import { getConfig, type ConfigProvider, type Environment } from "./config.js";
 import { ConfigurationError, logDiagnostic } from "./diagnostics.js";
+import { bearerChallenge, protectedResourceMetadata, type AuthenticationResult, type DescopeMcpConfig } from "./auth/descope-mcp.js";
 
 /** Verify issuer, audience and caller authorization before resolving any CW secrets.
- * Throw or return false to deny. A future OAuth integration supplies this callback.
+ * Typed denials preserve safe OAuth responses; false/throws remain fail-closed.
  */
-export type McpAuthenticator = (request: IncomingMessage) => Promise<boolean>;
+export type McpAuthenticator = (request: IncomingMessage) => Promise<boolean | AuthenticationResult>;
 export function requireHttpAuthentication(env: Environment, authenticate?: McpAuthenticator): McpAuthenticator {
   if (env.AUTH_MODE && env.AUTH_MODE !== "env") throw new ConfigurationError("gateway-disabled");
   if (authenticate) return authenticate;
@@ -23,28 +24,47 @@ export function createHttpHandler(options: {
   authenticate: McpAuthenticator;
   configProvider?: ConfigProvider;
   allowedOrigins?: readonly string[];
+  authConfig?: DescopeMcpConfig;
 }) {
   return async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    const reply = (status: number, error: string) => {
-      res.writeHead(status, { "Content-Type": "application/json" });
+    const reply = (status: number, error: string, challenge?: string) => {
+      res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store",
+        ...(challenge ? { "WWW-Authenticate": challenge } : {}) });
       res.end(JSON.stringify({ error }));
     };
     try {
       const path = new URL(req.url || "/", "http://localhost").pathname;
       if (path === "/health") { reply(200, "ok"); return; }
+      if (path === "/.well-known/oauth-protected-resource/mcp" && options.authConfig) {
+        if (req.method !== "GET") { reply(405, "method_not_allowed"); return; }
+        res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+        res.end(JSON.stringify(protectedResourceMetadata(options.authConfig))); return;
+      }
       if (path !== "/mcp") { reply(404, "not_found"); return; }
       if (req.headers.origin && !options.allowedOrigins?.includes(req.headers.origin)) {
         reply(403, "origin_denied"); return;
       }
       // The authentication boundary: no configuration, tools, or transport before this.
-      if (!await options.authenticate(req)) { reply(401, "unauthorized"); return; }
+      let result: boolean | AuthenticationResult;
+      try { result = await options.authenticate(req); }
+      catch {
+        logDiagnostic("auth.denied");
+        reply(401, "invalid_token", options.authConfig ? bearerChallenge(options.authConfig, "invalid_token") : undefined);
+        return;
+      }
+      if (result !== true && !(typeof result === "object" && result?.authenticated === true)) {
+        const denial = typeof result === "object" && result?.authenticated === false ? result : undefined;
+        reply(denial?.status ?? 401, denial?.error ?? "unauthorized",
+          options.authConfig ? bearerChallenge(options.authConfig, denial?.error) : undefined);
+        return;
+      }
       if (req.method !== "POST") { reply(405, "method_not_allowed"); return; }
       if (Object.keys(req.headers).some(name => name.startsWith("x-cw-"))) {
         reply(400, "per_request_credentials_disabled"); return;
       }
       const config = await (options.configProvider ?? getConfig)();
       if (config?.rejectUnauthorized === false) throw new ConfigurationError("invalid-config");
-      const server = createMcpServer(config);
+      const server = createMcpServer(config, options.authConfig?.requiredScope);
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined, enableJsonResponse: true,
       });

@@ -31,6 +31,7 @@ import { registerCatalogTools } from "./tools/catalog.js";
 import { registerHealthTools } from "./tools/health.js";
 import { registerAgreementTools } from "./tools/agreements.js";
 import { registerOpportunityTools } from "./tools/opportunities.js";
+import { installToolSecurityMetadata } from "./auth/tool-security.js";
 
 export type { CwManageConfig };
 
@@ -43,11 +44,12 @@ export { buildConfig, resolveGatewayConfig } from "./config.js";
  * @param configOverride - Optional service configuration; null means unconfigured.
  *   When provided, the client is built from it instead of reading process.env.
  */
-export function createMcpServer(configOverride?: CwManageConfig | null): McpServer {
+export function createMcpServer(configOverride?: CwManageConfig | null, requiredScope = "connectwise.read"): McpServer {
   const server = new McpServer({
     name: "connectwise-manage-mcp",
     version: "1.4.0",
   });
+  installToolSecurityMetadata(server, requiredScope);
 
   // MCP Apps (SEP-1865): the ui:// ticket card is static embedded HTML, so it
   // is served with or without credentials (hosts may prefetch it).

@@ -2,7 +2,7 @@
 
 Status: agreed product architecture and operating model for future implementation. Phase 1 is internal/private use. This document describes the intended product; it does not claim that the setup console, persisted configuration, or production OAuth integration is already implemented.
 
-This is a documentation-only reference. It authorizes no application changes, Azure resources, authentication changes, or deployment. The existing fail-closed HTTP behavior remains in force. Implementation must satisfy the compatibility and security gates in [ChatGPT / Entra Authentication Design](CHATGPT_ENTRA_AUTHENTICATION_DESIGN.md) and preserve [Phase 1 Hardening](PHASE1_HARDENING.md).
+This reference does not authorize resources or deployment. The fail-closed HTTP boundary now has an implemented Descope resource-server verifier. Current evidence and remaining gates are in [ChatGPT / Descope live test](CHATGPT_DESCOPE_MCP_LIVE_TEST.md); preserve [Phase 1 Hardening](PHASE1_HARDENING.md). The earlier direct-Entra design is superseded.
 
 ## Core Product Model
 
@@ -27,7 +27,7 @@ Initial OAuth linking is separate from ongoing token validation and renewal. Exp
 
 ### 1. Application / User Identity
 
-Microsoft Entra is the identity provider for our application and MCP authorization. Its purpose is to answer:
+Microsoft Entra is the upstream identity provider, federated to Descope through Monotorr SAML for MCP linking. Descope is the MCP OAuth authorization server and issues resource-specific access tokens. The future console flow remains separate. Identity establishes:
 
 > Who is this user, and are they allowed to configure or use this MCP service?
 
@@ -94,7 +94,7 @@ Its responsibilities are:
 
 The MCP client must never provide ConnectWise credentials. The MCP endpoint must never accept ConnectWise public/private keys through tool arguments, HTTP headers, query parameters, or per-request configuration. It must not use caller-supplied connection settings to select a ConnectWise instance or replace service credentials.
 
-Configuration is service-owned. The runtime configuration-provider interface supplies stored configuration after caller authorization; it is not a facility for accepting credentials from ChatGPT. Entra access tokens authorize access to the MCP service and are not passed through to ConnectWise.
+Configuration is service-owned. The runtime configuration-provider interface supplies stored configuration after caller authorization; it is not a facility for accepting credentials from ChatGPT. Only validated Descope MCP access tokens authorize this service; neither Descope nor Entra tokens are forwarded to ConnectWise.
 
 These are conceptual planes within the separate ConnectWise MCP product. This document does not prescribe separate executables or Azure resources for each plane.
 
@@ -119,7 +119,7 @@ Activation requires valid service configuration and the required authentication 
 flowchart TD
     U[User] --> G[ChatGPT]
     G --> M[https://api.monotorr.com/mcp]
-    M --> O[Initial OAuth authorization to our MCP service through Entra]
+    M --> O[Descope OAuth authorization with upstream Entra SAML login]
     O --> T[Authenticated MCP tool invocation]
     T --> V[MCP service validates caller and authorizes tool access]
     V --> K[MCP service loads stored ConnectWise credentials]

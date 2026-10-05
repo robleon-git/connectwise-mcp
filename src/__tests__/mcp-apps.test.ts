@@ -86,7 +86,7 @@ describe("MCP Apps ticket card", () => {
 
     it("no other tools carry UI metadata", async () => {
       const others = (await listTools()).filter(
-        (t) => t._meta && !RENDERABLE_TOOLS.includes(t.name),
+        (t) => (t._meta?.["ui/resourceUri"] || t._meta?.ui) && !RENDERABLE_TOOLS.includes(t.name),
       );
       expect(others).toEqual([]);
     });

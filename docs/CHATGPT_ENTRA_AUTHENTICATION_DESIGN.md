@@ -1,5 +1,7 @@
 # ChatGPT / Entra authentication design
 
+> **Superseded decision, 2026-10-04:** actual workforce discovery returned no advertised S256; the direct-Entra design below is historical and must not be implemented. Descope is now the MCP authorization server; Entra is only upstream SAML identity. Descope S256 discovery and Monotorr SAML/JIT login passed. The resource-server verifier is implemented; ChatGPT exchange, real MCP claims/audience/scope, refresh and Azure deployment remain unvalidated. Current exact values and code/test gates are in [ChatGPT / Descope live test](CHATGPT_DESCOPE_MCP_LIVE_TEST.md). Do not create the historical direct-Entra MCP API/client registrations for this broker design.
+
 Research date: 2026-10-04. Design only; no application, configuration, credentials, Azure resources, deployments, or app registrations changed. The baseline is [Phase 1 hardening](PHASE1_HARDENING.md).
 
 **Decision: pursue a direct Entra integration through a narrowly scoped compatibility check, but do not call it production-ready or unconditionally compatible yet.** Microsoft documents native MCP resource indicators. The concrete blocker is discovery: the public Entra `organizations` document fetched during this review lacks the PKCE capability field required by MCP. Your tenant-specific document and ChatGPT's fixed-client behavior remain untested.
