@@ -100,6 +100,55 @@ describe("Descope signed access-token policy", () => {
   });
 });
 
+describe("safe authentication diagnostics", () => {
+  it.each([
+    ["accepted", {}, undefined],
+    ["missing approved claim", { sub: undefined }, "approved_user_missing"],
+    ["mismatched approved claim", { sub: "private-other-subject" }, "approved_user_mismatch"],
+    ["missing scope", { scope: undefined }, "missing_scope"],
+    ["wrong issuer", { iss: "https://private-issuer.example" }, "issuer_validation_failed"],
+    ["wrong audience", { aud: "private-audience" }, "audience_validation_failed"],
+    ["expired", { exp: 1 }, "time_validation_failed"],
+    ["future token", { nbf: 9999999999 }, "time_validation_failed"],
+    ["missing expiry", { exp: undefined }, "required_claim_missing"],
+  ] as [string, JWTPayload, string | undefined][])("logs only fixed facts for %s", async (_, overrides, reason) => {
+    const logs = vi.spyOn(console, "error").mockImplementation(() => {});
+    const token = await signed({ sub: authConfig.approvedUserId, email: "private-email@example.test",
+      privateClaim: "raw-claim-canary", ...overrides });
+    const auth = createDescopeMcpAuthenticator({ ...authConfig, approvedUserClaim: "/sub" }, keyResolver);
+    await auth(request(`Bearer ${token}`));
+    expect(logs).toHaveBeenCalledTimes(1);
+    const entry = JSON.parse(logs.mock.calls[0][0]);
+    expect(entry.event).toBe(reason ? "auth.denied" : "auth.accepted");
+    expect(entry.reason).toBe(reason);
+    if (!reason || reason.startsWith("approved_user")) expect(entry.claimPath).toBe("/sub");
+    expect(Object.keys(entry).sort()).toEqual(["event", "requestId", ...(reason ? ["reason"] : []),
+      ...(!reason || reason.startsWith("approved_user") ? ["claimPath"] : [])].sort());
+    const output = JSON.stringify(logs.mock.calls);
+    for (const secret of [token, token.split(".")[1], authConfig.approvedUserId, "private-other-subject",
+      "private-email@example.test", "raw-claim-canary", "private-audience", "private-issuer", "Bearer", "Authorization"])
+      expect(output).not.toContain(secret);
+  });
+  it("distinguishes missing bearer and signature/JWKS failures without raw errors", async () => {
+    const logs = vi.spyOn(console, "error").mockImplementation(() => {});
+    const auth = createDescopeMcpAuthenticator(authConfig, keyResolver);
+    await auth(request());
+    await auth(request(`Bearer ${await signed({}, true)}`));
+    await createDescopeMcpAuthenticator(authConfig, async () => {
+      throw new Error("Bearer private-token raw-claim-canary");
+    })(request(`Bearer ${await signed()}`));
+    expect(logs.mock.calls.map(call => JSON.parse(call[0]).reason)).toEqual([
+      "no_bearer_token", "jwt_verification_failed", "jwt_verification_failed"]);
+    expect(JSON.stringify(logs.mock.calls)).not.toMatch(/private-token|raw-claim-canary|Bearer/);
+  });
+  it("masks arbitrary configured claim pointers and logs no identity value", async () => {
+    const logs = vi.spyOn(console, "error").mockImplementation(() => {});
+    await createDescopeMcpAuthenticator(authConfig, keyResolver)(request(`Bearer ${await signed()}`));
+    expect(JSON.parse(logs.mock.calls[0][0])).toMatchObject({ event: "auth.accepted", claimPath: "[configured]" });
+    expect(JSON.stringify(logs.mock.calls)).not.toContain(authConfig.approvedUserId);
+  });
+});
+
 const deniedCases: [string, JWTPayload, number, string][] = [
   ["wrong issuer", { iss: "https://other.example/v1/apps/agentic/Ptest/RStest" }, 401, "invalid_token"],
   ["direct Entra token", { iss: "https://login.microsoftonline.com/tenant/v2.0" }, 401, "invalid_token"],
@@ -178,6 +227,35 @@ describe("real HTTP MCP wire integration", () => {
     base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   });
   afterAll(async () => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
+  it("correlates safe RPC methods and final statuses without headers, bodies, or identity", async () => {
+    const logs = vi.spyOn(console, "error").mockImplementation(() => {});
+    const token = await signed();
+    for (const method of ["initialize", "notifications/initialized", "tools/list", "private-method-canary"]) {
+      const params = method === "initialize" ? { protocolVersion: "2025-11-25", capabilities: {},
+        clientInfo: { name: "private-body-canary", version: "1" } } : {};
+      const response = await fetch(base + "/mcp?private-query-canary", { method: "POST",
+        headers: { ...headers, Authorization: `Bearer ${token}`, Cookie: "private-cookie-canary" },
+        body: JSON.stringify({ jsonrpc: "2.0", ...(method === "notifications/initialized" ? {} : { id: 1 }), method, params }) });
+      await response.text();
+    }
+    const denied = await fetch(base + "/mcp", { method: "POST", headers });
+    await denied.text();
+    const entries = logs.mock.calls.map(call => JSON.parse(call[0]));
+    expect(entries.filter(entry => entry.event === "mcp.request").map(entry => entry.rpcMethod))
+      .toEqual(["initialize", "notifications/initialized", "tools/list", "other"]);
+    expect(entries.filter(entry => entry.event === "mcp.response").map(entry => entry.status))
+      .toEqual([200, 202, 200, 200, 401]);
+    for (const entry of entries.filter(entry => entry.event === "mcp.request")) {
+      expect(entry).toMatchObject({ method: "POST", path: "/mcp" });
+      expect(entries.some(other => other.event === "auth.accepted" && other.requestId === entry.requestId)).toBe(true);
+      expect(entries.some(other => other.event === "mcp.response" && other.requestId === entry.requestId)).toBe(true);
+      expect(Object.keys(entry).sort()).toEqual(["event", "requestId", "method", "path", "rpcMethod"].sort());
+    }
+    const output = JSON.stringify(logs.mock.calls);
+    for (const secret of [token, token.split(".")[1], authConfig.approvedUserId, "agent-test-subject",
+      "private-method-canary", "private-body-canary", "private-query-canary", "private-cookie-canary", "Authorization", "Bearer"])
+      expect(output).not.toContain(secret);
+  });
   it("publishes canonical public PRM, without root alias or secret lookup", async () => {
     provider.mockClear();
     const response = await fetch(base + "/.well-known/oauth-protected-resource/mcp");

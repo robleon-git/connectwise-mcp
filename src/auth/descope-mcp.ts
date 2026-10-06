@@ -1,7 +1,7 @@
 import type { IncomingMessage } from "node:http";
-import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from "jose";
+import { createRemoteJWKSet, jwtVerify, errors, type JWTVerifyGetKey } from "jose";
 import type { Environment } from "../config.js";
-import { ConfigurationError } from "../diagnostics.js";
+import { ConfigurationError, logAuthDiagnostic, type AuthDiagnosticReason } from "../diagnostics.js";
 
 export interface DescopeMcpConfig {
   issuer: string;
@@ -77,9 +77,13 @@ export function createDescopeMcpAuthenticator(
     const header = request.headers.authorization;
     const count = request.rawHeaders?.filter((_, i) => i % 2 === 0 &&
       request.rawHeaders[i].toLowerCase() === "authorization").length;
-    if (!header) return { authenticated: false, status: 401, error: "unauthorized" };
+    if (!header) {
+      logAuthDiagnostic(request, "no_bearer_token");
+      return { authenticated: false, status: 401, error: "unauthorized" };
+    }
     if (typeof header !== "string" || (count !== undefined && count > 1) || header.length > 16384 ||
         !/^Bearer [A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/i.test(header)) {
+      logAuthDiagnostic(request, "malformed_bearer_token");
       return { authenticated: false, status: 401, error: "invalid_token" };
     }
     try {
@@ -88,14 +92,28 @@ export function createDescopeMcpAuthenticator(
         requiredClaims: ["iss", "aud", "exp", "sub"],
       });
       if (typeof payload.scope !== "string" || !payload.scope.split(" ").includes(config.requiredScope)) {
+        logAuthDiagnostic(request, "missing_scope");
         return { authenticated: false, status: 403, error: "insufficient_scope" };
       }
       if (claimAtPointer(payload, config.approvedUserClaim) !== config.approvedUserId) {
+        logAuthDiagnostic(request, claimAtPointer(payload, config.approvedUserClaim) === undefined
+          ? "approved_user_missing" : "approved_user_mismatch", config.approvedUserClaim);
         return { authenticated: false, status: 403, error: "forbidden" };
       }
+      logAuthDiagnostic(request, undefined, config.approvedUserClaim);
       return { authenticated: true };
-    } catch {
+    } catch (error) {
       // JOSE/JWKS errors can contain token claims or network details. Never expose them.
+      let reason: AuthDiagnosticReason = "jwt_verification_failed";
+      if (error instanceof errors.JWTExpired) reason = "time_validation_failed";
+      else if (error instanceof errors.JWTClaimValidationFailed) {
+        if (error.reason === "missing") reason = error.claim === "sub" && config.approvedUserClaim === "/sub"
+          ? "approved_user_missing" : "required_claim_missing";
+        else if (error.claim === "iss") reason = "issuer_validation_failed";
+        else if (error.claim === "aud") reason = "audience_validation_failed";
+        else if (error.claim === "exp" || error.claim === "nbf") reason = "time_validation_failed";
+      }
+      logAuthDiagnostic(request, reason, reason === "approved_user_missing" ? config.approvedUserClaim : undefined);
       return { authenticated: false, status: 401, error: "invalid_token" };
     }
   };

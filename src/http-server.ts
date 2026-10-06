@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createMcpServer } from "./mcp-server.js";
 import { getConfig, type ConfigProvider, type Environment } from "./config.js";
-import { ConfigurationError, logDiagnostic } from "./diagnostics.js";
+import { ConfigurationError, logDiagnostic, logAuthDiagnostic, logMcpDiagnostic } from "./diagnostics.js";
 import { bearerChallenge, protectedResourceMetadata, type AuthenticationResult, type DescopeMcpConfig } from "./auth/descope-mcp.js";
 
 /** Verify issuer, audience and caller authorization before resolving any CW secrets.
@@ -41,6 +41,8 @@ export function createHttpHandler(options: {
         res.end(JSON.stringify(protectedResourceMetadata(options.authConfig))); return;
       }
       if (path !== "/mcp") { reply(404, "not_found"); return; }
+      // Observe the final HTTP status without inspecting any response body or headers.
+      res.once("finish", () => logMcpDiagnostic(req, req.method, { status: res.statusCode }));
       if (req.headers.origin && !options.allowedOrigins?.includes(req.headers.origin)) {
         reply(403, "origin_denied"); return;
       }
@@ -48,7 +50,7 @@ export function createHttpHandler(options: {
       let result: boolean | AuthenticationResult;
       try { result = await options.authenticate(req); }
       catch {
-        logDiagnostic("auth.denied");
+        logAuthDiagnostic(req, "authenticator_failed");
         reply(401, "invalid_token", options.authConfig ? bearerChallenge(options.authConfig, "invalid_token") : undefined);
         return;
       }
@@ -72,6 +74,13 @@ export function createHttpHandler(options: {
         void Promise.all([transport.close(), server.close()]).catch(error => logDiagnostic("transport.failed", error));
       });
       await server.connect(transport);
+      // The SDK already parses and validates JSON-RPC. Observe only an allowlisted method
+      // at its transport boundary; do not read, copy, or retain the request body.
+      const onmessage = transport.onmessage;
+      transport.onmessage = (message, extra) => {
+        logMcpDiagnostic(req, req.method, { rpcMethod: "method" in message ? message.method : undefined });
+        onmessage?.(message, extra);
+      };
       await transport.handleRequest(req, res);
     } catch (error) {
       logDiagnostic("transport.failed", error);
