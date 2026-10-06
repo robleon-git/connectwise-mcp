@@ -3,7 +3,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createConnectWiseConfigLoader, createAzureSecretReader, CW_UNCONFIGURED_PLACEHOLDER } from "../config-loader.js";
 import { createMcpServer } from "../mcp-server.js";
-import { CwManageClient } from "../api-client.js";
+import { CwManageClient, type CwManageConfig } from "../api-client.js";
+import { buildConfig, validateConfig } from "../config.js";
 import { logDiagnostic } from "../diagnostics.js";
 import { createHttpHandler } from "../http-server.js";
 import { EventEmitter } from "node:events";
@@ -35,7 +36,7 @@ vi.mock("../api-client.js", async importOriginal => {
 });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.clearAllMocks(); });
 
-async function connected(configOverride: typeof config | null) {
+async function connected(configOverride: CwManageConfig | null) {
   const server = createMcpServer(configOverride);
   const client = new Client({ name: "config-loader-offline-test", version: "1" });
   const [left, right] = InMemoryTransport.createLinkedPair();
@@ -92,6 +93,25 @@ describe("central ConnectWise config loader", () => {
     const factory = vi.fn();
     expect(await createConnectWiseConfigLoader({ env: { CW_CONFIG_SOURCE: "key-vault" }, createSecretReader: factory })()).toBeNull();
     expect(factory).not.toHaveBeenCalled();
+  });
+  describe.each(["env", "key-vault"])("optional Client ID in %s mode", source => {
+    it.each([undefined, "", "   ", " test-client "])("normalizes complete configuration with clientId=%s", async clientId => {
+      const read = vi.fn(async name => name === "connectwise-public-key" ? canaries.publicKey : canaries.privateKey);
+      const factory = vi.fn(async () => read);
+      const load = createConnectWiseConfigLoader({ env: { ...vaultEnv, CW_CONFIG_SOURCE: source,
+        CW_MANAGE_CLIENT_ID: clientId, CW_MANAGE_PUBLIC_KEY: canaries.publicKey,
+        CW_MANAGE_PRIVATE_KEY: canaries.privateKey }, createSecretReader: factory });
+      expect(await load()).toEqual({ ...config, clientId: clientId?.trim() || undefined });
+      if (source === "env") expect(factory).not.toHaveBeenCalled();
+      else expect(read.mock.calls.map(call => call[0]).sort()).toEqual(["connectwise-private-key", "connectwise-public-key"]);
+    });
+  });
+  it("accepts an omitted integration Client ID in shared config validation and compatibility builder", () => {
+    expect(validateConfig({ ...config, clientId: undefined }).clientId).toBeUndefined();
+    expect(buildConfig(config.companyId, config.publicKey, config.privateKey, undefined, config.baseUrl)).toEqual({
+      config: { ...config, clientId: undefined, rejectUnauthorized: undefined },
+    });
+    expect(buildConfig(config.companyId, config.publicKey, config.privateKey).config?.clientId).toBeUndefined();
   });
   it.each([{ CW_CONFIG_SOURCE: "other" }, { CW_KEY_VAULT_URI: "http://cw-pilot.vault.azure.net" },
     { CW_KEY_VAULT_URI: "https://attacker.example" }, { CW_KEY_VAULT_URI: "https://cw-pilot.vault.azure.net?secret=value" },
@@ -152,23 +172,25 @@ describe("official Azure SDK adapter", () => {
 });
 
 describe("Stage B GET-only connectivity", () => {
-  it("returns only sanitized success, discarding arbitrary system-info response data", async () => {
+  it.each([undefined, "test-client"])("returns only sanitized GET success with clientId=%s", async clientId => {
     const fetch = vi.fn(async (_input: unknown, _options?: unknown) => Response.json({ publicKey: canaries.publicKey, privateKey: canaries.privateKey, licensing: "customer-data" }));
     vi.stubGlobal("fetch", fetch);
-    const session = await connected(config);
+    const session = await connected({ ...config, clientId });
     try {
       const result = await session.client.callTool({ name: "cw_test_connection", arguments: {} });
       expect(result).toMatchObject({ isError: false, content: [{ type: "text", text: '{"connected":true}' }] });
       expect(fetch).toHaveBeenCalledOnce();
       expect(fetch.mock.calls[0][0]).toBe("https://cw.example/v4_6_release/apis/3.0/system/info");
       expect(fetch.mock.calls[0][1]).toMatchObject({ method: "GET", redirect: "error" });
+      const requestHeaders = new Headers((fetch.mock.calls[0][1] as RequestInit).headers);
+      expect(requestHeaders.get("clientId")).toBe(clientId ?? null);
       expect(JSON.stringify(result)).not.toMatch(/synthetic-|customer-data|Authorization/);
     } finally { await session.close(); }
   });
-  it.each([401, 403, 500])("sanitizes a CW HTTP %s failure", async status => {
+  it.each([401, 403, 500])("sanitizes a CW HTTP %s failure without Client ID", async status => {
     const logs = vi.spyOn(console, "error").mockImplementation(() => {});
     vi.stubGlobal("fetch", vi.fn(async () => new Response(`${canaries.privateKey} Authorization raw body`, { status })));
-    const session = await connected(config);
+    const session = await connected({ ...config, clientId: undefined });
     try {
       const result = await session.client.callTool({ name: "cw_test_connection", arguments: {} });
       expect(result).toMatchObject({ isError: true, content: [{ type: "text", text: JSON.stringify({ connected: false,
@@ -184,10 +206,10 @@ describe("Stage B GET-only connectivity", () => {
         content: [{ type: "text", text: '{"connected":false,"error":"connection_failed"}' }] });
     } finally { await session.close(); }
   });
-  it("exposes exactly the existing 39 read tools with no writes after vault loading", async () => {
-    const loaded = await createConnectWiseConfigLoader({ env: vaultEnv,
+  it.each([undefined, "test-client"])("exposes exactly 39 read tools and no writes after vault loading with clientId=%s", async clientId => {
+    const loaded = await createConnectWiseConfigLoader({ env: { ...vaultEnv, CW_MANAGE_CLIENT_ID: clientId },
       createSecretReader: async () => async name => name === "connectwise-public-key" ? canaries.publicKey : canaries.privateKey })();
-    const session = await connected(loaded as typeof config);
+    const session = await connected(loaded);
     try {
       const tools = (await session.client.listTools()).tools;
       expect(tools).toHaveLength(39); expect(tools.some(tool => tool.name === "cw_test_connection")).toBe(true);

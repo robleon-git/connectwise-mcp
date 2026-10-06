@@ -56,7 +56,7 @@ export function createConnectWiseConfigLoader({ env = process.env, createSecretR
     // Absent nonsecret deployment configuration preserves Stage A without vault I/O.
     const { CW_KEY_VAULT_URI: uri, CW_MANAGE_URL: baseUrl, CW_MANAGE_COMPANY_ID: companyId,
       CW_MANAGE_CLIENT_ID: clientId } = settings;
-    if (!uri || !baseUrl || !companyId || !clientId) return null;
+    if (!uri || !baseUrl || !companyId) return null;
     let vault: URL;
     try {
       vault = new URL(uri);

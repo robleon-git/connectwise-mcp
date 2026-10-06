@@ -9,7 +9,7 @@
  *   CW_MANAGE_COMPANY_ID       - Company identifier
  *   CW_MANAGE_PUBLIC_KEY        - API member public key
  *   CW_MANAGE_PRIVATE_KEY       - API member private key
- *   CW_MANAGE_CLIENT_ID         - Client ID from ConnectWise Developer Portal
+ *   CW_MANAGE_CLIENT_ID         - Optional operator-owned integration Client ID
  *   CW_MANAGE_REJECT_UNAUTHORIZED - Set to "false" to allow self-signed certs (default: "true")
  *
  * Self-signed certificate support is scoped to this client instance's own
@@ -29,7 +29,7 @@ export { getConfig, type CwManageConfig } from "./config.js";
  */
 export class CwManageClient {
   private readonly authHeader: string;
-  private readonly clientId: string;
+  private readonly clientId: string | undefined;
   private readonly apiBase: string;
   private readonly dispatcher: Agent | undefined;
 
@@ -62,7 +62,7 @@ export class CwManageClient {
   private defaultHeaders(): Record<string, string> {
     return {
       Authorization: this.authHeader,
-      clientId: this.clientId,
+      ...(this.clientId ? { clientId: this.clientId } : {}),
       "Content-Type": "application/json",
       Accept: "application/json",
     };

@@ -10,7 +10,7 @@ This implementation is prepared locally, not deployed. Run the commands below on
 | `CW_KEY_VAULT_URI` | Nonsecret `https://<vault-name>.vault.azure.net`, Azure public cloud; required for Vault mode |
 | `CW_MANAGE_URL` | Nonsecret HTTPS ConnectWise base URL; explicit in Vault mode, existing NA default in env mode |
 | `CW_MANAGE_COMPANY_ID` | Nonsecret ConnectWise company identifier; required |
-| `CW_MANAGE_CLIENT_ID` | Nonsecret ConnectWise Developer Portal client ID; required; not an Entra OAuth client ID |
+| `CW_MANAGE_CLIENT_ID` | Optional nonsecret operator-owned integration Client ID; absent/empty means omit the `clientId` header; not required for Stage B activation |
 | `CW_MANAGE_PUBLIC_KEY` / `CW_MANAGE_PRIVATE_KEY` | Existing local compatibility inputs only; never used as fallback in Vault mode |
 | `CW_MANAGE_REJECT_UNAUTHORIZED` | Existing default verified TLS remains; Vault mode rejects `false` |
 | Vault `connectwise-public-key` | ConnectWise API member public key (credential material) |
@@ -23,6 +23,16 @@ Vault URI and ConnectWise HTTPS configuration are validated before secret lookup
 Missing nonsecret inputs, absent/empty keys or the exact noncredential placeholder `__CONNECTWISE_NOT_CONFIGURED__` produce null configuration and preserve Stage A: one `cw_test_connection`, the unchanged missing-credentials diagnostic, no ConnectWise client and no API call. Vault 404 is treated as missing; permission/network/identity failures are sanitized configuration errors, not fallback to local keys. The authenticated HTTP request fails closed with 500 if Vault resolution fails; `/health` remains a process-health check and does not access the vault. Invalid source/URL/TLS settings fail closed.
 
 With complete configuration, the server exposes **39 read-only tools total, including `cw_test_connection`**, not 40. Zero removed write tools return. `cw_test_connection` uses existing GET `/system/info` and discards the API response body. It returns `{"connected":true}` on success or `isError: true` with `{"connected":false,"error":"authentication_failed","httpStatus":401}` (403 likewise), a sanitized status for other HTTP failures, or generic `connection_failed` for network errors. It never logs/returns credentials, headers, raw errors or licensing/customer data. Other read tool behavior is unchanged.
+
+## Verified API-member authentication contract
+
+The client constructs `Authorization: Basic base64(CompanyID+PublicKey:PrivateKey)` unchanged. It sends `clientId` in a separate HTTP header only when a nonempty integration Client ID is configured. Company ID identifies the ConnectWise company; the member's key pair authenticates its API access. No API Member ID/username is read or combined with the public key. Create and authorize the dedicated read-only API member administratively, but do not add `CW_MANAGE_MEMBER_ID` to runtime configuration.
+
+Required customer/runtime inputs are the ConnectWise server URL, Company ID, API-member public key and API-member private key. Vault mode also requires the dedicated `CW_KEY_VAULT_URI` and `CW_CONFIG_SOURCE=key-vault`. Existing local env mode retains its NA URL default. The optional operator input is `CW_MANAGE_CLIENT_ID`, which remains supported if we later obtain/use an operator-owned integration Client ID. It is not part of Basic authentication, either API key, an API Member ID or an OAuth client ID. The loader's normalized object remains `{baseUrl, companyId, publicKey, privateKey, clientId, rejectUnauthorized}`; Client ID is trimmed, with absent/empty/whitespace-only input represented as `undefined`. No empty header or generated/default ID is sent. Local environment support and the two fixed Key Vault secret names remain unchanged.
+
+Customers do not need a Developer Portal account for our current onboarding path. Optional integration Client ID provisioning belongs to the service operator. ConnectWise's published [Developer Network registration terms](https://register.developer.connectwise.com/) prohibit requiring customers to create a separate developer account or Client ID to use an integration. This separates integration provisioning from customer onboarding; it does not prove every server accepts omission of the header.
+
+The live pilot GET `/system/info` call without `clientId` is the validation gate. No authenticated ConnectWise request was made during this local change, and our target server's acceptance of omission is not yet proven. If it rejects omission, record the sanitized HTTP status/result as evidence and revisit operator-owned integration Client ID provisioning. Do not weaken Descope authorization, ConnectWise role restrictions, TLS or any other authentication controls; do not invent a GUID or substitute an API Member ID.
 
 ## Operator prerequisites
 
@@ -39,7 +49,7 @@ CW_VAULT_NAME='<globally-unique-dedicated-vault-name>'
 CW_OPERATOR_OBJECT_ID='<your-Entra-user-object-id-from-Azure-portal>'
 CW_SERVER_URL='<https://your-ConnectWise-server>'
 CW_COMPANY_ID='<ConnectWise-company-id>'
-CW_CLIENT_ID='<ConnectWise-Developer-Portal-client-id>'
+CW_CLIENT_ID='' # Optional operator-owned integration ID; leave empty for the pilot validation.
 CW_IMAGE_TAG='<new-unique-reviewed-stageb-build-tag>'
 CW_RG='monotorr-dev-eastus-rg'
 CW_APP='connectwise-mcp-pilot'
@@ -87,7 +97,7 @@ az keyvault secret set --vault-name "$CW_VAULT_NAME" --name connectwise-private-
   --value '__CONNECTWISE_NOT_CONFIGURED__' --output none
 ```
 
-Those literal values are deliberately noncredentials. The loader recognizes them and never sends them to ConnectWise. Only run placeholder creation on the new dedicated vault; do not overwrite previously populated keys. Do not disable the placeholders: disabled secrets can return access errors rather than 404. In Azure portal → your dedicated Key Vault → Secrets, create a new **enabled** version of each named secret with the real corresponding API key. Do not paste the values into the shell, repository, MCP caller, logs or documentation. The administrator creates the dedicated ConnectWise API member/read-only role and obtains the pair independently. Supply the server URL, company ID and Developer Portal client ID above; these are separate from the OAuth configuration.
+Those literal values are deliberately noncredentials. The loader recognizes them and never sends them to ConnectWise. Only run placeholder creation on the new dedicated vault; do not overwrite previously populated keys. Do not disable the placeholders: disabled secrets can return access errors rather than 404. In Azure portal → your dedicated Key Vault → Secrets, create a new **enabled** version of each named secret with the real corresponding API key. Do not paste the values into the shell, repository, MCP caller, logs or documentation. The administrator creates the dedicated ConnectWise API member/read-only role and obtains the pair independently. Supply the server URL and company ID; leave the optional integration Client ID empty for the pilot validation. These are separate from the OAuth configuration.
 
 If you intentionally deploy with placeholders first, confirm the original Stage A behavior. Replacing both placeholders with real values transitions the loader after its next cache expiry (at most 60 seconds for the loader snapshot); no auth/routing change or redeploy is needed for that rotation. Avoid MCP calls between updating the two key versions, since a transient mixed pair fails authentication. Do not treat a loader cache as a persistent secret store or a substitute for key rotation/revocation.
 
@@ -126,4 +136,4 @@ Official packages: [Key Vault Secrets SDK](https://learn.microsoft.com/en-us/jav
 
 Focused tests use only generated/synthetic canaries and mocked SDK/HTTP responses; no live secrets are written or requested. The live managed-identity/Vault RBAC/GET check remains a manual Stage B gate. Dependencies added: `@azure/identity` 4.13.3 and `@azure/keyvault-secrets` 4.11.2. The compatible transitive `proxy-addr` patch 2.0.7 → 2.0.8 was also applied to remove the previously identified production advisory. No Azure command in this document was executed during implementation.
 
-Validation on 2026-10-06: `npm run build:ui`, `npm run build`, `npm run lint`, `npm test` (12 files, 244 passed, 0 failed), `npm audit --omit=dev` (0 vulnerabilities), and `git diff --check` all exited 0. The runbook's shell blocks also passed `bash -n`. No commit, push, deployment or Azure/Descope mutation occurred; earlier uncommitted local operator-helper work was preserved.
+Optional Client ID correction validated on 2026-10-06: `npm run build:ui`, `npm run build`, `npm run lint`, `npm test` (12 files, 259 passed, 0 failed), `npm audit --omit=dev` (0 vulnerabilities), and `git diff --check` all exited 0. The runbook's shell blocks also passed `bash -n`. No commit, push, deployment or Azure/Descope mutation occurred during this correction. Live acceptance of GET `/system/info` without `clientId` remains untested.

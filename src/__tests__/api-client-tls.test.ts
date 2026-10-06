@@ -47,6 +47,31 @@ describe("CwManageClient TLS dispatcher (no process.env mutation)", () => {
     expect(process.env.NODE_TLS_REJECT_UNAUTHORIZED).toBeUndefined();
   });
 
+  it("authenticates with company and member keys, with a separate integration clientId header", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(fakeResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+    await new CwManageClient(baseConfig).get("/system/info");
+
+    const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const headers = new Headers(options.headers);
+    expect(url).toBe("https://api-na.myconnectwise.net/v4_6_release/apis/3.0/system/info");
+    expect(options.method).toBe("GET");
+    expect(headers.get("Authorization")).toBe(`Basic ${Buffer.from("acme+pub:priv").toString("base64")}`);
+    expect(headers.get("clientId")).toBe("client-1");
+    expect(new URL(url).search).toBe("");
+    expect(headers.has("memberId")).toBe(false);
+  });
+
+  it.each([undefined, "", "   "])("omits the clientId header entirely for absent/empty clientId (%s)", async clientId => {
+    const fetchMock = vi.fn().mockResolvedValue(fakeResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+    await new CwManageClient({ ...baseConfig, clientId }).get("/system/info");
+    const [, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const headers = new Headers(options.headers);
+    expect(headers.has("clientId")).toBe(false);
+    expect(headers.get("Authorization")).toBe(`Basic ${Buffer.from("acme+pub:priv").toString("base64")}`);
+  });
+
   it("uses Node's default fetch dispatcher when TLS verification is not relaxed", async () => {
     const fetchMock = vi.fn().mockResolvedValue(fakeResponse({ ok: true }));
     vi.stubGlobal("fetch", fetchMock);
