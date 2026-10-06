@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 const messages = {
   "http-auth-required": "HTTP requires configured authentication. For local testing only, explicitly enable unauthenticated loopback access.",
   "invalid-config": "Invalid service configuration; check required environment variables.",
+  "cw-config-unavailable": "ConnectWise configuration could not be loaded; details redacted.",
   "gateway-disabled": "Per-request ConnectWise credentials are disabled for the Phase 1 HTTP service.",
   "read-only": "ConnectWise writes are disabled in Phase 1.",
 } as const;

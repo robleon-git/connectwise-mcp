@@ -1,0 +1,6 @@
+{"TimeStamp":"2026-10-05T21:00:00Z","Log":"Connecting to container log stream..."}
+{"TimeStamp":"2026-10-05T21:00:01Z","Log":"{\"event\":\"auth.accepted\",\"requestId\":\"22222222-2222-4222-8222-222222222222\",\"claimPath\":\"/sub\",\"sub\":\"PRIVATE-SYNTHETIC-ID\",\"Authorization\":\"Bearer PRIVATE-SYNTHETIC-TOKEN\"}"}
+{"TimeStamp":"2026-10-05T21:00:02Z","Log":"2026-10-05T21:00:02.123456789Z stderr F {\"event\":\"mcp.request\",\"requestId\":\"22222222-2222-4222-8222-222222222222\",\"method\":\"POST\",\"path\":\"/mcp\",\"rpcMethod\":\"initialize\",\"body\":\"PRIVATE-SYNTHETIC-BODY\"}"}
+{"TimeStamp":"2026-10-05T21:00:03Z","Log":"2026-10-05T21:00:03.123456789+00:00 stderr F {\"event\":\"mcp.response\",\"requestId\":\"22222222-2222-4222-8222-222222222222\",\"method\":\"POST\",\"path\":\"/mcp\",\"status\":200,\"cookie\":\"PRIVATE-SYNTHETIC-COOKIE\"}"}
+{"TimeStamp":"2026-10-05T21:00:04Z","Log":"2026-10-05T21:00:04Z stdout P {\"event\":\"auth.accepted\",\"requestId\":\"22222222-2222-4222-8222-222222222222\"}"}
+{"TimeStamp":"2026-10-05T21:00:05Z","Log":"Plain text with PRIVATE-SYNTHETIC-CLAIMS {\"event\":\"auth.accepted\",\"requestId\":\"22222222-2222-4222-8222-222222222222\"}"}

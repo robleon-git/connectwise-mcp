@@ -10,7 +10,7 @@ export interface CwManageConfig {
 }
 
 export type Environment = Readonly<Record<string, string | undefined>>;
-/** Future managed configuration resolves here; no Azure SDK or Key Vault access. */
+/** Single boundary for environment or managed configuration. */
 export type ConfigProvider = () => CwManageConfig | null | Promise<CwManageConfig | null>;
 
 export function validateConfig(config: CwManageConfig): CwManageConfig {

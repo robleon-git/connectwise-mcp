@@ -1,7 +1,8 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createMcpServer } from "./mcp-server.js";
-import { getConfig, type ConfigProvider, type Environment } from "./config.js";
+import { type ConfigProvider, type Environment } from "./config.js";
+import { createConnectWiseConfigLoader } from "./config-loader.js";
 import { ConfigurationError, logDiagnostic, logAuthDiagnostic, logMcpDiagnostic } from "./diagnostics.js";
 import { bearerChallenge, protectedResourceMetadata, type AuthenticationResult, type DescopeMcpConfig } from "./auth/descope-mcp.js";
 
@@ -26,6 +27,7 @@ export function createHttpHandler(options: {
   allowedOrigins?: readonly string[];
   authConfig?: DescopeMcpConfig;
 }) {
+  const configProvider = options.configProvider ?? createConnectWiseConfigLoader();
   return async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const reply = (status: number, error: string, challenge?: string) => {
       res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store",
@@ -64,7 +66,7 @@ export function createHttpHandler(options: {
       if (Object.keys(req.headers).some(name => name.startsWith("x-cw-"))) {
         reply(400, "per_request_credentials_disabled"); return;
       }
-      const config = await (options.configProvider ?? getConfig)();
+      const config = await configProvider();
       if (config?.rejectUnauthorized === false) throw new ConfigurationError("invalid-config");
       const server = createMcpServer(config, options.authConfig?.requiredScope);
       const transport = new StreamableHTTPServerTransport({

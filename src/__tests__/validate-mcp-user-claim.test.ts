@@ -16,10 +16,11 @@ interface Helper {
   verifyTokenAndFindPaths: (token: string, resolver: ReturnType<typeof createLocalJWKSet>) => Promise<Summary>;
   checkPilotEnvironment: (env: Record<string, string>) => void;
   validateDiscovery: (metadata: Record<string, unknown>) => Record<string, unknown>;
+  freshLoginParameters: (metadata: Record<string, unknown>) => { prompt: string };
   createLoopbackCallback: (state: string, metadata: Record<string, unknown>, timeout?: number) => Promise<Callback>;
   runDiagnostic: (options: { fetchImpl: typeof fetch; openBrowser: (url: string) => Promise<boolean>;
     onAuthorizationUrl?: (url: string) => void | Promise<void>; keyResolver: ReturnType<typeof createLocalJWKSet>;
-    env: Record<string, string>; callbackTimeoutMs?: number }) => Promise<Summary>;
+    env: Record<string, string>; callbackTimeoutMs?: number; freshLogin?: boolean }) => Promise<Summary>;
   main: (run: () => Promise<unknown>, output: (value: string) => void) => Promise<number>;
   discoverMcp: (token: string, verified: Summary, options: { fetchImpl: typeof fetch }) => Promise<Summary>;
 }
@@ -156,8 +157,16 @@ describe("loopback callback", () => {
 });
 
 describe("mocked authorization-code / PKCE exchange", () => {
-  it.each([true, false])("uses resource/S256/public DCR/access_token only (browser available: %s)", async browserAvailable => {
-    const token = await sign();
+  it("requests only standard prompt=login and rejects an explicitly unsupported prompt", () => {
+    for (const prompt_values_supported of [undefined, null, ["login", "consent"]]) {
+      expect(helper.freshLoginParameters({ prompt_values_supported })).toEqual({ prompt: "login" });
+    }
+    for (const prompt_values_supported of [[], ["consent"], "login"]) {
+      expect(() => helper.freshLoginParameters({ prompt_values_supported })).toThrow("details suppressed");
+    }
+  });
+  it.each([[true, false, true], [false, false, true], [true, true, true], [true, true, false]])("uses resource/S256/public DCR/access_token (browser: %s, fresh: %s, approved: %s)", async (browserAvailable, freshLogin, approved) => {
+    const token = await sign(approved ? {} : { sub: "unapproved-synthetic-subject" });
     let redirectUri = "", challenge = "";
     const remote = vi.fn(async (input: string | URL | Request, options?: RequestInit) => {
       const url = String(input);
@@ -192,24 +201,27 @@ describe("mocked authorization-code / PKCE exchange", () => {
         expect(authorize.searchParams.get("resource")).toBe(pilot.resourceUri);
         expect(authorize.searchParams.get("scope")).toBe("connectwise.read offline_access");
         expect(authorize.searchParams.get("code_challenge_method")).toBe("S256");
+        expect(authorize.searchParams.get("prompt")).toBe(freshLogin ? "login" : null);
+        expect(authorize.searchParams.has("login_hint")).toBe(false);
         expect(authorize.searchParams.has("code_verifier")).toBe(false);
         challenge = authorize.searchParams.get("code_challenge")!;
         const callback = new URL(redirectUri);
         callback.search = new URLSearchParams({ code: "synthetic-code", state: authorize.searchParams.get("state")! }).toString();
         expect((await fetch(callback)).status).toBe(200);
     };
-    const result = await helper.runDiagnostic({ fetchImpl: remote as typeof fetch, env: {}, keyResolver: jwks,
+    const result = await helper.runDiagnostic({ fetchImpl: remote as typeof fetch, env: {}, keyResolver: jwks, freshLogin,
       openBrowser: async url => { if (!browserAvailable) return false; await authorizeLocally(url); return true; },
       onAuthorizationUrl: async url => { output(url); await authorizeLocally(url); } });
     expect(remote.mock.calls.filter(([url]) => String(url) !== pilot.resourceUri)).toHaveLength(3);
     const methods = remote.mock.calls.filter(([url, options]) => String(url) === pilot.resourceUri && options?.method === "POST")
       .map(([, options]) => JSON.parse(options!.body as string).method);
-    expect(methods).toEqual(["initialize", "notifications/initialized", "tools/list"]);
+    expect(methods).toEqual(approved ? ["initialize", "notifications/initialized", "tools/list"] : []);
     expect(output).toHaveBeenCalledTimes(browserAvailable ? 0 : 1);
     expect(JSON.stringify(output.mock.calls)).not.toContain(token);
     expect(JSON.stringify(output.mock.calls)).not.toMatch(/code_verifier|synthetic-code|never-output/);
-    expect(result).toMatchObject({ resourceTokenVerified: true, approvedIdMatchPaths: ["/sub"],
-      mcpInitializeSucceeded: true, toolsListSucceeded: true, toolCount: 1, toolNames: ["cw_test_connection"] });
+    expect(result).toMatchObject(approved ? { resourceTokenVerified: true, approvedIdMatchPaths: ["/sub"],
+      mcpInitializeSucceeded: true, toolsListSucceeded: true, toolCount: 1, toolNames: ["cw_test_connection"] }
+      : { resourceTokenVerified: true, approvedIdMatchPaths: [] });
     expect(JSON.stringify(result)).not.toContain(token);
   });
 });

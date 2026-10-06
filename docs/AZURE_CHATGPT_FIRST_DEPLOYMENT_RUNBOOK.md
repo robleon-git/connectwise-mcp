@@ -255,7 +255,48 @@ Discovery-extension verification: UI build, TypeScript build, application/helper
 
 ### Safe server-side discovery diagnostics
 
-The operator has now reported successful live SDK initialize and tools/list with a verified resource token and `/sub` match. ChatGPT-specific action discovery still needs verification. The server instrumentation added for that investigation requires a separately authorized deployment; this task does not deploy it or change configuration.
+#### Simple local operator command
+
+```sh
+cd /Users/rleon/Development/connectwise-mcp
+npm run diagnose:live-mcp
+```
+
+Optional automatic Azure diagnostic snapshot:
+
+```sh
+npm run diagnose:live-mcp -- --azure-logs
+```
+
+#### Operator behavior and limitations
+
+The operator command prints `Opening browser for fresh Monotorr SAML authentication...`, requests standard `prompt=login`, and reuses the existing loopback PKCE, public temporary-client registration, strict resource-token verification and SDK handshake. It does not accept token arguments or persist tokens. A verified token without an approved-ID match yields only `resourceTokenVerified: true`, `approvedIdMatched: false` and the instruction `Re-authenticate with the intended Monotorr SAML identity`; exit code 2, no MCP calls and no Azure log retrieval. A match proceeds to SDK discovery and prints the safe success/failure facts with `approvedIdMatched: true`. Invalid OAuth/token verification exits 1; MCP discovery failure exits 3. Select the intended SAML sign-in route rather than OTP when the flow presents a choice. Nothing deletes or modifies the duplicate account.
+
+This operator wrapper uses the pinned public pilot identifiers rather than stale shell overrides for resource/issuer/user configuration, while still rejecting `NODE_TLS_REJECT_UNAUTHORIZED=0`. It never reads CW configuration. The original helper's optional environment checks remain unchanged for direct invocation.
+
+**Fresh-login limitation:** [Descope documents `prompt=login` for its OIDC authorization flow](https://docs.descope.com/identity-federation/applications/oidc-apps). The resource-specific MCP flow's handling of this parameter and propagation to Entra SAML are not proven by those general docs or offline tests. If discovery explicitly advertises prompts without `login`, the helper stops before registration. When that optional metadata is absent, it sends the standard request as a best-effort prompt, without an unsupported provider-specific parameter or automatic retry with weaker interaction. This cannot guarantee a new Entra password/MFA prompt, the SAML route, or a particular identity: browser/Entra sessions and flow policy still matter. If the wrong identity persists, use an isolated browser profile/private session and manually open the authorization link there when shown; the default browser may retain SSO. No logout or SAML ForceAuthn override is performed.
+
+With `--azure-logs`, the existing Azure CLI session and selected subscription are used; no login, subscription switch, extension install or Azure configuration change is attempted. After the MCP calls, the helper discovers currently active revisions, their replicas and container names, then retrieves the latest 300 console lines per container without following a stream. If no safe events are visible it retries twice, waiting 2 seconds and then 4 seconds and rediscovering targets each time. See the official [Azure log command](https://learn.microsoft.com/en-us/cli/azure/containerapp/logs?view=azure-cli-latest) and [replica command](https://learn.microsoft.com/en-us/cli/azure/containerapp/replica?view=azure-cli-latest). CLI output/stderr stays captured in memory. The parser handles NDJSON/array envelopes, JSON in `Log`, legacy `Log_s`, decoded objects and CRI timestamp/stream/full-record prefixes; it rejects partial CRI records and arbitrary text containing embedded JSON. Only reconstructed allowlisted `auth.accepted`, `auth.denied`, `mcp.request` and `mcp.response` fields are printed to stderr; every unknown field and unstructured line is discarded. Repeated events are deduplicated. The final OAuth/MCP summary remains on stdout.
+
+Azure completion now explicitly separates retrieval from evidence:
+
+```json
+{"azureDiagnosticsRetrieved":true,"structuredEventsFound":true,"eventCount":3}
+{"azureDiagnosticsRetrieved":true,"structuredEventsFound":false,"reason":"no_matching_events"}
+{"azureDiagnosticsRetrieved":false,"structuredEventsFound":false,"reason":"azure_cli_unavailable"}
+```
+
+Only one of those completion records is printed. Safe events precede the record when found. Missing CLI/login, subscription/RBAC/extension/network errors and snapshot problems do not alter the OAuth/MCP exit result. A successful snapshot is retained even if a later retrieval fails.
+
+**Root-cause findings for the empty Azure output:** the previous helper incorrectly equated a successful CLI exit with finding diagnostic events, used one immediate 100-line snapshot and required each `Log` string to be bare JSON. Server `logAuthDiagnostic` and `logMcpDiagnostic` use `console.error(JSON.stringify(...))`, so events are written to stderr, not stdout. The auth verifier emits accepted/denied events; the HTTP SDK message hook emits RPC events; response `finish` emits status. [Azure captures container stderr and stdout as console logs](https://learn.microsoft.com/en-us/azure/container-apps/logging), and the installed Azure CLI prints JSON stream envelopes on its own stdout, which the helper captures. A read-only format/count check during investigation retrieved two snapshots/five JSON envelopes containing `Log` strings, but found no bare or embedded target events; no raw logs or sensitive metadata were emitted. Thus the helper defects are established, while a prefix mismatch is a supported parser case rather than a proven explanation of those particular live snapshots. A fresh operator run with this fix must establish whether target events are present. No server code or deployment change is required for the local fix. If retries still find nothing, absence from those snapshots does not prove the deployed code never emits logs.
+
+Snapshots can include earlier helper or ChatGPT requests and multiple active replicas/revisions. Use generated `requestId` values to correlate events; these are not guaranteed to correspond exclusively to this invocation. No incoming correlation header or logging policy is added. There is no client-clock/timestamp cutoff that can silently exclude messages. Snapshot retention, replica replacement, zero replicas, timeout or truncated CLI output may prevent retrieval. Commands are bounded (30 seconds each; maximum three attempts, 8 active revisions, 32 replicas and 8 containers per replica per attempt). Brief console-stream retries do not guarantee long-term Log Analytics ingestion, which is a separate source. For Stage A, successful discovery still means one `cw_test_connection` tool and no tool execution or ConnectWise credentials.
+
+Local workflow validation, 2026-10-05: UI build, application build, lint, full suite (11 files/211 tests) and whitespace check passed. Production audit returned one critical finding for existing transitive `proxy-addr@2.0.7` (SDK → Express); [GHSA-jqcg-44mw-7w3h](https://github.com/advisories/GHSA-jqcg-44mw-7w3h) identifies 2.0.8 as patched. No dependency/lockfile changes were made in this workflow-only task. OAuth and Azure retrieval tests were mocked/local; no live OAuth registration, Azure read or external configuration mutation was performed during development.
+
+Azure snapshot follow-up validation, 2026-10-05: UI/application builds, lint, standalone helper lint/syntax, full suite (11 files/216 tests) and whitespace check passed. Production audit still exits 1 for the same critical `proxy-addr` advisory; dependencies remain unchanged. Unlike the initial workflow task, this follow-up included the limited read-only Azure format/count check described above; no external changes, deployment, commit or push were performed.
+
+The operator has reported successful live SDK initialize and tools/list with a verified resource token and `/sub` match, followed by newer no-match helper results. ChatGPT-specific action discovery still needs verification. The operator also reports the server instrumentation is already deployed in image `b4cd675`; this local-workflow task does not deploy it or change configuration.
 
 Logs are single-line JSON on stderr, always enabled, with a server-generated `requestId` shared by auth, RPC and final HTTP status events. No incoming correlation header is used. Filter events to `auth.accepted`, `auth.denied`, `mcp.request` and `mcp.response` during a fresh ChatGPT connection attempt.
 
@@ -276,6 +317,8 @@ Example safe events (IDs are generated by the server):
 An identity denial followed by 403 distinguishes a ChatGPT token-claim problem from an accepted request that reaches initialize/list. Accepted auth with no RPC event can indicate method/header/configuration rejection or malformed transport input. A 200 tools/list response proves server-side completion of that request, but does not prove ChatGPT accepted its schema or response; these logs intentionally omit bodies. A 403 with no auth event can indicate the existing Origin gate, which runs before authentication. Do not enable verbose token/body/header tracing to investigate further.
 
 ## First ConnectWise Read
+
+Stage B now has a dedicated centralized runtime Vault loader. Follow [Stage B Key Vault setup](STAGE_B_KEY_VAULT_SETUP.md) for the reviewed configuration/secret contract and manual commands; do not put the public/private keys in Container App environment variables for the hosted pilot. The earlier Stage A/bootstrap instructions remain historical context.
 
 After Stage A authentication PASS, the CW administrator must verify the dedicated API member's read-only security role and provide the final URL, Company ID, public/private keys and Client ID outside the repository. Do not infer CW permissions from Entra or Descope identity. Add only service-specific configuration/secret references and restart/create the intended revision; retain auth settings and TLS verification.
 

@@ -229,11 +229,20 @@ export async function discoverMcp(token, verified, { fetchImpl = fetch, signal }
   return facts;
 }
 
+export function freshLoginParameters(metadata) {
+  // Standard OIDC request, never a Descope-specific flow/session override. If the
+  // AS explicitly advertises prompts without login, stop rather than downgrade.
+  if (metadata.prompt_values_supported !== undefined && metadata.prompt_values_supported !== null &&
+      (!Array.isArray(metadata.prompt_values_supported) || !metadata.prompt_values_supported.includes("login"))) throw failure();
+  return { prompt: "login" };
+}
+
 export async function runDiagnostic({ fetchImpl = fetch, openBrowser = openDefaultBrowser,
   onAuthorizationUrl = url => process.stderr.write(`Open this OAuth authorization URL in your browser:\n${url}\n`),
-  keyResolver, env = process.env, callbackTimeoutMs = 300000 } = {}) {
+  keyResolver, env = process.env, callbackTimeoutMs = 300000, freshLogin = false } = {}) {
   checkPilotEnvironment(env);
   const metadata = validateDiscovery(await jsonRequest(fetchImpl, PILOT.issuer + "/.well-known/openid-configuration"));
+  const interaction = freshLogin ? freshLoginParameters(metadata) : {};
   const state = randomBytes(32).toString("base64url");
   const verifier = randomBytes(32).toString("base64url");
   const challenge = createHash("sha256").update(verifier).digest("base64url");
@@ -259,7 +268,7 @@ export async function runDiagnostic({ fetchImpl = fetch, openBrowser = openDefau
     const authorize = new URL(metadata.authorization_endpoint);
     authorize.search = new URLSearchParams({ response_type: "code", client_id: client.client_id,
       redirect_uri: callback.redirectUri, state, code_challenge: challenge, code_challenge_method: "S256",
-      resource: PILOT.resourceUri, scope: "connectwise.read offline_access" }).toString();
+      resource: PILOT.resourceUri, scope: "connectwise.read offline_access", ...interaction }).toString();
     if (!await openBrowser(authorize.href).catch(() => false)) await onAuthorizationUrl(authorize.href);
     const code = await callback.code;
     const tokens = await jsonRequest(fetchImpl, metadata.token_endpoint, {

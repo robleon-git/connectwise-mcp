@@ -5,10 +5,11 @@ import { createMcpServer } from "./mcp-server.js";
 import { createHttpHandler, requireHttpAuthentication } from "./http-server.js";
 import { logDiagnostic } from "./diagnostics.js";
 import { createDescopeMcpAuthenticator, getDescopeMcpConfig } from "./auth/descope-mcp.js";
+import { createConnectWiseConfigLoader } from "./config-loader.js";
 
 async function main(): Promise<void> {
   if ((process.env.MCP_TRANSPORT || "stdio") === "stdio") {
-    await createMcpServer().connect(new StdioServerTransport());
+    await createMcpServer(await createConnectWiseConfigLoader()()).connect(new StdioServerTransport());
     logDiagnostic("server.started");
     return;
   }
