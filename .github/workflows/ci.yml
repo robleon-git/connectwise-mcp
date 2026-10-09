@@ -7,17 +7,38 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: cw_delivery_test
+          POSTGRES_PASSWORD: phase0-ci-disposable-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d cw_delivery_test"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      CW_DATABASE_INTEGRATION: 'true'
+      CW_DB_HOST: 127.0.0.1
+      CW_DB_NAME: cw_delivery_test
+      CW_DB_USER: postgres
+      CW_DB_LOCAL_PASSWORD: phase0-ci-disposable-only
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '26'
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm run build:ui
       - run: npm run build
+      - run: npm run validate:ticket-card
+      - run: npm run build:portal
       - run: npm run lint
       - run: npm test
       - run: npm audit --omit=dev
+      - run: npm audit
+      - run: git diff --check

@@ -1,0 +1,136 @@
+name: Phase 0 manual delivery
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        type: choice
+        description: Control API release action (no MCP deployment)
+        options: [build, prepare, promote, rollback, portal]
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: connectwise-production-delivery
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: cw_delivery_test
+          POSTGRES_PASSWORD: phase0-ci-disposable-only
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d cw_delivery_test"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      CW_DATABASE_INTEGRATION: 'true'
+      CW_DB_HOST: 127.0.0.1
+      CW_DB_NAME: cw_delivery_test
+      CW_DB_USER: postgres
+      CW_DB_LOCAL_PASSWORD: phase0-ci-disposable-only
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '26'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run build:ui && npm run build && npm run validate:ticket-card && npm run build:portal
+      - run: npm run lint && npm test && npm audit --omit=dev && npm audit && git diff --check
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: phase0-portal
+          path: portal/dist
+          if-no-files-found: error
+          retention-days: 14
+  deliver:
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: connectwise-production
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
+    env:
+      RELEASE_ACTION: ${{ inputs.action }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '26'
+      - uses: Azure/login@8216e11d8cd9b42fe925c852af8e76311ff067ac
+        with:
+          client-id: ${{ vars.CW_AZURE_DEPLOY_CLIENT_ID }}
+          tenant-id: ad6bf531-194d-4880-8baa-013ab8eab0e8
+          subscription-id: 08a97e42-1e1f-4f33-95dc-36af13337091
+      - name: Validate reviewed delivery targets
+        run: node --input-type=module -e 'import {configuration,assertSubscription} from "./scripts/deploy/common.mjs"; await assertSubscription(await configuration());'
+      - name: Download prior release evidence
+        if: inputs.action == 'promote' || inputs.action == 'rollback'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVIDENCE_RUN: ${{ vars.CW_PREPARED_RUN_ID }}
+        run: |
+          test -n "$EVIDENCE_RUN"
+          gh run download "$EVIDENCE_RUN" --name phase0-release --dir .delivery
+      - name: Download reviewed immutable build evidence
+        if: inputs.action == 'prepare'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_RUN: ${{ vars.CW_BUILT_RUN_ID }}
+        run: |
+          test -n "$BUILD_RUN"
+          gh run download "$BUILD_RUN" --name phase0-release --dir .delivery
+      - name: Control API artifact and release
+        if: inputs.action != 'portal'
+        run: |
+          npm run release:phase0 -- "$RELEASE_ACTION"
+      - name: Download this run's verified portal artifact
+        if: inputs.action == 'portal'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download "$GITHUB_RUN_ID" --name phase0-portal --dir portal/dist
+      - name: Obtain SWA transport token through OIDC-authenticated ARM
+        id: swa
+        if: inputs.action == 'portal'
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          token=$(az staticwebapp secrets list -n connectwise-portal -g monotorr-connectwise-prod-rg --query properties.apiKey -o tsv --only-show-errors)
+          test -n "$token"
+          echo "::add-mask::$token"
+          echo "token=$token" >> "$GITHUB_OUTPUT"
+      - uses: Azure/static-web-apps-deploy@1a947af9992250f3bc2e68ad0754c0b0c11566c9
+        if: inputs.action == 'portal'
+        with:
+          azure_static_web_apps_api_token: ${{ steps.swa.outputs.token }}
+          action: upload
+          app_location: portal/dist
+          output_location: ''
+          skip_app_build: true
+          skip_api_build: true
+          production_branch: ${{ github.ref_name }}
+      - name: Portal deployed smoke
+        if: inputs.action == 'portal'
+        run: |
+          hostname=$(az staticwebapp show -n connectwise-portal -g monotorr-connectwise-prod-rg --query defaultHostname -o tsv --only-show-errors)
+          npm run smoke:delivery -- portal "https://$hostname"
+          npm run smoke:delivery -- mcp https://api.monotorr.com
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always() && inputs.action != 'portal'
+        with:
+          name: phase0-release
+          path: .delivery/*.json
+          if-no-files-found: ignore
+          retention-days: 14

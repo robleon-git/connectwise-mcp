@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 import { setTimeout as wait } from "node:timers/promises";
 import { runDiagnostic, main as safeDiagnosticMain, openDefaultBrowser } from "./validate-mcp-user-claim.mjs";
+import { matchesReadToolInventory } from "./read-only-tool-inventory.mjs";
 
 const execute = promisify(execFile);
 const target = ["--name", "connectwise-mcp-pilot", "--resource-group", "monotorr-dev-eastus-rg"];
@@ -129,7 +130,7 @@ export async function main({ args = process.argv.slice(2), run = runDiagnostic,
   openBrowser = openDefaultBrowser, azure = retrieveAzureDiagnostics,
   output = text => process.stdout.write(text + "\n"),
   progress = text => process.stderr.write(text + "\n") } = {}) {
-  if (args.length > 1 || (args.length === 1 && args[0] !== "--azure-logs")) {
+  if (args.some(arg => !["--azure-logs", "--expect-read-tools"].includes(arg)) || new Set(args).size !== args.length) {
     output(JSON.stringify({ resourceTokenVerified: false, approvedIdMatched: false, failureStage: "arguments" }));
     return 1;
   }
@@ -150,6 +151,12 @@ export async function main({ args = process.argv.slice(2), run = runDiagnostic,
   }
   const summary = { resourceTokenVerified: facts.resourceTokenVerified, approvedIdMatched: matched,
     ...(matched ? facts : { failureStage: "oauth_or_token_validation" }) };
+  const checkInventory = args.includes("--expect-read-tools");
+  if (checkInventory) {
+    summary.expectedReadToolSetMatched = matched && facts.mcpInitializeSucceeded === true &&
+      facts.toolsListSucceeded === true && matchesReadToolInventory(facts.toolNames);
+    if (code === 0 && !summary.expectedReadToolSetMatched) summary.failureStage = "tool_inventory";
+  }
   if (matched && args.includes("--azure-logs")) {
     let logs;
     try { logs = await azure(); } catch { logs = { status: "unavailable", events: [] }; }
@@ -168,7 +175,7 @@ export async function main({ args = process.argv.slice(2), run = runDiagnostic,
     }));
   }
   output(JSON.stringify(summary));
-  return code;
+  return code === 0 && checkInventory && !summary.expectedReadToolSetMatched ? 4 : code;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

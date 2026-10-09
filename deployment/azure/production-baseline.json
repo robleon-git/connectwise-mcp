@@ -1,0 +1,20 @@
+{
+  "observedAt": "2026-10-08",
+  "mcpApp": "connectwise-mcp-pilot",
+  "resourceGroup": "monotorr-dev-eastus-rg",
+  "revision": "connectwise-mcp-pilot--0000005",
+  "mode": "Single",
+  "traffic": [
+    {
+      "latestRevision": true,
+      "weight": 100
+    }
+  ],
+  "configuredImage": "monotorrdevacr6689.azurecr.io/connectwise-mcp@sha256:31fdec08dbe8a8a912275958e9314575745c7f77d0ae02cb8f3e364221f708f3",
+  "explicitProbes": null,
+  "resource": "https://api.monotorr.com/mcp",
+  "dnsCname": "monotorr-api-prod.purplesea-558e8ead.eastus.azurecontainerapps.io",
+  "environment": "monotorr-prod-aca-env",
+  "mcpCustomDomainBindings": [],
+  "routingStatus": "Canonical HTTP health/metadata/401 checks verified; complete host/path mapping remains unresolved. Do not modify routing."
+}

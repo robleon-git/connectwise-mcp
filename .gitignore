@@ -7,3 +7,7 @@ coverage/
 
 # Cloudflare Wrangler
 .wrangler/
+
+# Local sanitized delivery evidence and generated portal artifacts
+.delivery/
+portal/dist/

@@ -14,12 +14,27 @@ interface Operator {
   safeAzureEvent: (input: unknown) => Event | undefined;
 }
 const operator = await import(path) as Operator;
+const { EXPECTED_READ_TOOLS } = await import("../../scripts/read-only-tool-inventory.mjs" as string) as { EXPECTED_READ_TOOLS: string[] };
 const requestId = "22222222-2222-4222-8222-222222222222";
 const success = { resourceTokenVerified: true, approvedIdMatchPaths: ["/sub"],
   mcpInitializeSucceeded: true, toolsListSucceeded: true, protocolVersion: "2025-11-25",
   toolCount: 1, toolNames: ["cw_test_connection"] };
 
 describe("simple local operator workflow", () => {
+  it("verifies initialize and the exact connected 39-tool inventory without tool execution", async () => {
+    const output = vi.fn();
+    expect(await operator.main({ args: ["--expect-read-tools"], run: async () => ({ ...success,
+      toolNames: [...EXPECTED_READ_TOOLS].reverse() }), output, progress: vi.fn() })).toBe(0);
+    expect(JSON.parse(output.mock.calls[0][0])).toMatchObject({ mcpInitializeSucceeded: true,
+      toolsListSucceeded: true, toolCount: 39, expectedReadToolSetMatched: true });
+  });
+  it.each([ ["cw_test_connection"], [...EXPECTED_READ_TOOLS.slice(1), "cw_create_ticket"],
+    [...EXPECTED_READ_TOOLS.slice(1), EXPECTED_READ_TOOLS[1]] ])("rejects incomplete/write/duplicate inventories", async (...names) => {
+    const output = vi.fn();
+    expect(await operator.main({ args: ["--expect-read-tools"], run: async () => ({ ...success, toolNames: names }),
+      output, progress: vi.fn() })).toBe(4);
+    expect(JSON.parse(output.mock.calls[0][0])).toMatchObject({ expectedReadToolSetMatched: false, failureStage: "tool_inventory" });
+  });
   it("requests a fresh browser interaction and prints a whitelisted success summary", async () => {
     const output = vi.fn(), progress = vi.fn(), openBrowser = vi.fn(async () => true);
     const run = vi.fn(async options => {

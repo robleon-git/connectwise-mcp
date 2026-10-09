@@ -1,0 +1,15 @@
+{
+  "Name": "ConnectWise Portal Deployment Token",
+  "IsCustom": true,
+  "Description": "Read the dedicated ConnectWise portal deployment transport token; no other application resources.",
+  "Actions": [
+    "Microsoft.Web/staticSites/read",
+    "Microsoft.Web/staticSites/listSecrets/action"
+  ],
+  "NotActions": [],
+  "DataActions": [],
+  "NotDataActions": [],
+  "AssignableScopes": [
+    "/subscriptions/08a97e42-1e1f-4f33-95dc-36af13337091/resourceGroups/monotorr-connectwise-prod-rg"
+  ]
+}
