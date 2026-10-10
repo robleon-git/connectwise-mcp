@@ -131,6 +131,9 @@ jobs:
         if: always() && inputs.action != 'portal'
         with:
           name: phase0-release
-          path: .delivery/*.json
-          if-no-files-found: ignore
+          path: |
+            .delivery/built-image.json
+            .delivery/control-release.json
+          include-hidden-files: true
+          if-no-files-found: error
           retention-days: 14

@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { describe, it, expect, vi } from "vitest";
 import { createServer } from "node:http";
 import { createControlApi } from "../control-plane/server.js";
@@ -147,5 +148,17 @@ describe("product-specific delivery safeguards", () => {
             expect(resource.properties.template.containers[0].env).toContainEqual({ name: "CW_DB_HOST", value: "monotorr-cw-db-01.postgres.database.azure.com" });
             expect(JSON.stringify(resource)).not.toContain("monotorr-cw-prod-pg");
         }
+    });
+});
+
+describe("release evidence publication", () => {
+    it("includes hidden delivery evidence with an explicit nonsecret file allowlist", async () => {
+        const workflow = await readFile(new URL("../../.github/workflows/deploy.yml", import.meta.url), "utf8");
+        const evidence = workflow.slice(workflow.indexOf("          name: phase0-release"));
+        expect(evidence).toContain(".delivery/built-image.json");
+        expect(evidence).toContain(".delivery/control-release.json");
+        expect(evidence).toContain("include-hidden-files: true");
+        expect(evidence).toContain("if-no-files-found: error");
+        expect(evidence).not.toContain(".delivery/*.json");
     });
 });
