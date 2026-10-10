@@ -51,6 +51,12 @@ jobs:
           if-no-files-found: error
           retention-days: 14
   deliver:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'robleon-git/connectwise-mcp' &&
+      github.ref == 'refs/heads/phase1-hardening' &&
+      github.actor == 'robleon-git' &&
+      github.triggering_actor == 'robleon-git'
     needs: verify
     runs-on: ubuntu-latest
     environment: connectwise-production

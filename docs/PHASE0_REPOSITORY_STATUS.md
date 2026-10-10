@@ -53,3 +53,7 @@ The local PostgreSQL and API test containers were removed. Ignored `.delivery/` 
 Existing canonical routing was inspected read-only in the earlier baseline pass. CNAME/environment/app observations and unresolved exact host/path mapping are documented; no guesses were applied to DNS or bindings. Existing MCP and Monotorr API images remain distinct in raw Azure metadata. Future MCP changes need a separate routing-aware delivery review; Phase 0 preserves the working service.
 
 Phase 0 live acceptance has not passed: repository/local verification is not a substitute for deployed tests.
+
+## Current production approval flow — 2026-10-10
+
+Owner-approved delivery uses one human gate: Codex presents the exact live-changing action, receives owner approval, then triggers manual GitHub delivery. No required GitHub environment reviewers. Keep `connectwise-production`, branch-only policy, owner initiating/rerun checks, exact OIDC federation and scoped RBAC, immutable evidence, verification/audit gates and smoke/rollback. No automatic push deployment or MCP deployment extension. Historical protected-review milestones above remain historical records. Codex approval is procedural; GitHub does not independently validate the conversation approval.

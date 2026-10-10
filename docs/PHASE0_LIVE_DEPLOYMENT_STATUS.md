@@ -1,5 +1,9 @@
 # Phase 0 live deployment preflight — 2026-10-09
 
+## Current delivery approval policy — approved 2026-10-10
+
+The owner approved moving the sole human approval gate into Codex. Before dispatch/rerun, Codex presents the exact live-changing action and receives explicit owner approval. The `connectwise-production` required-reviewer rule is to be removed; branch/environment restrictions, manual-only events, exact OIDC/RBAC, CI/audit/evidence/smoke/rollback safeguards remain. The workflow additionally restricts delivery to the exact repository/branch and owner initiating/rerun identities. No deployment or Azure mutation is authorized by this policy change. GitHub-review entries below are historical; refer to the current runbook for subsequent releases. Codex approval is procedural, not independently attested by GitHub. Settings application is pending verification.
+
 Status: intended live PostgreSQL target is **`monotorr-cw-db-01`, North Central US, PostgreSQL 18/B1ms**. No creation/retry is authorized by this repository update. Initial RG/deployment identity/federation/portal shell exist; Phase 0 live acceptance is not complete. Earlier names/regions below are historical observations, not current deployment targets.
 
 ## Historical preflight: source and GitHub
