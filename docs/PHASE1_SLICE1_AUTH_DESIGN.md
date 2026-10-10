@@ -1,6 +1,6 @@
 # Phase 1 Slice 1 — customer browser authentication design
 
-Status: Slice 1 repository implementation in progress; live acceptance pending. The owner resolved portal placement to `portal.monotorr.com` and approved a separate business-account Entra registration. No Slice 1 PASS claim is made.
+Status: **Phase 1 Slice 1 acceptance PASS (2026-10-10)**. Deployment, real customer login/logout/re-login, read-only database evidence and production account-isolation checks passed. Publisher verification remains a pre-launch requirement, not a Slice 1 blocker. Slice 2 is not started.
 
 Scope: Microsoft business login → internal user → one customer account → one 30-day trial → account-status screen → logout. Scope authority remains [V1 architecture](V1_PRODUCT_ARCHITECTURE.md) and [implementation plan](V1_IMPLEMENTATION_PLAN.md). This slice does not change MCP, link Descope identities, collect ConnectWise credentials or implement later entitlement acquisition paths.
 
@@ -11,7 +11,7 @@ Scope: Microsoft business login → internal user → one customer account → o
 - MCP remains `https://api.monotorr.com/mcp`.
 - Do not create another control API hostname. Azure-generated app FQDNs remain deployment/candidate verification targets, not customer authentication URLs.
 
-## Proposed namespace and browser routes
+## Approved namespace and browser routes
 
 Dedicated API base: `https://api.monotorr.com/connectwise/v1`.
 
@@ -63,7 +63,7 @@ Read-only inspection found `app.monotorr.com` bound to `monotorr-portal`. The ow
 
 ## Microsoft identity and registration contract
 
-Use a ConnectWise-specific application registration with business/organizational accounts across Entra tenants (`AzureADMultipleOrgs`), independently configured from Monotorr 365. The explicitly approved registration is **Monotorr ConnectWise Customer Login**, client ID `4405ef16-dc89-4385-8a84-cda2a52274cf`, object ID `ac582c04-b7d8-479a-b050-6ff4d32aa1a4`. Its home-tenant service principal is separate. Web callback is exact, implicit token issuance is disabled, and `requiredResourceAccess` is empty. No Monotorr 365 or Descope registration was changed. Request only OIDC `openid profile email`; no Microsoft Graph API, Microsoft 365 administration or admin-consent workflow. Customer tenant policy may still restrict ordinary application consent.
+Use a ConnectWise-specific application registration with business/organizational accounts across Entra tenants (`AzureADMultipleOrgs`), independently configured from Monotorr 365. The explicitly approved customer-login registration is **Monotorr** (originally created as Monotorr ConnectWise Customer Login), client ID `4405ef16-dc89-4385-8a84-cda2a52274cf`, object ID `ac582c04-b7d8-479a-b050-6ff4d32aa1a4`. Its home-tenant service principal is separate. Web callback is exact, implicit token issuance is disabled, and `requiredResourceAccess` is empty. No Monotorr 365 or Descope registration was changed. Request only OIDC `openid profile email`; no Microsoft Graph API, Microsoft 365 administration or admin-consent workflow. Customer tenant policy may still restrict ordinary application consent.
 
 Use a maintained OIDC client library for code flow, PKCE, state/nonce validation and token response handling rather than copying the inherited Monotorr custom verifier. `openid-client` 6.8.8 was added; the implementation explicitly enables its JWS signature checks in addition to token response validation; default transport trust alone is insufficient for the intended signed-identity validation. Its required `jose` dependency advances the existing compatible 6.x lock to 6.2.12; MCP behavior must pass regression tests. `oauth4webapi` 3.8.8 is transitive. [Library signature validation](https://github.com/panva/openid-client/blob/main/docs/functions/enableNonRepudiationChecks.md).
 
@@ -108,8 +108,61 @@ Slice 1 remains incomplete until focused/full PostgreSQL 18 validation, immutabl
 
 ## Slice 1 checkpoint — 2026-10-10
 
-Local validation passed: 494 tests across 24 files with real disposable PostgreSQL 18 integration enabled; UI, backend and portal builds; self-contained ticket-card validation; lint; production/full audits (zero vulnerabilities); diff checks. Real integration verifies four concurrent first logins resolve one account/trial, repeat login and email update preserve account/trial, a second immutable identity resolves a separate account, foreign account context is denied, session hashes/expiry/revocation hold, and runtime cannot perform migration/admin or entitlement-update operations.
+Local validation passed: 495 tests across 24 files with real disposable PostgreSQL 18 integration enabled; UI, backend and portal builds; self-contained ticket-card validation; lint; production/full audits (zero vulnerabilities); diff checks. Real integration verifies four concurrent first logins resolve one account/trial, repeat login and email update preserve account/trial, a second immutable identity resolves a separate account, foreign account context is denied, session hashes/expiry/revocation hold, and runtime cannot perform migration/admin or entitlement-update operations.
 
 Live setup completed with explicit owner authorization: separate organizational-account registration and home-tenant enterprise application; browser-only credential/flow-key provisioning in memory into the product vault; two secret-specific runtime read grants; owner-created Cloudflare DNS-only portal CNAME; ConnectWise portal domain status Ready and HTTPS smoke passed. `app.monotorr.com` remains with the Monotorr 365 portal. Existing MCP anonymous smoke passed; its application/configuration/credentials/tools were not changed. Existing GitHub production environment has only the branch policy, with no duplicate required-reviewer gate.
 
-Not completed yet: source commit/push, OIDC immutable image publication, private production migration, auth-enabled control API candidate/promotion, additive API route application, new portal publication, real Microsoft browser login/logout/re-login, production aggregate database evidence, authenticated MCP inventory/owner dogfood. Slice 1 is not PASS at this checkpoint.
+Deployment completed after explicit owner approval:
+
+- Source: `d15ca5078608573b75ac7138a358a095f133d839` (customer foundation), followed by `6f01e1d29881212e736472b7610dd1c6d64cd8ab` (bounded candidate-label prompt correction).
+- Corrected immutable build: GitHub run `38066326435`, successful. ACR digest independently matched retained build evidence: `sha256:dd5a4c703a3cb27285a9f461b7a0b07fb4e9b3325caf3c0c65595c232053f47c`.
+- Private migration/candidate: run `38066871246`, successful; execution `connectwise-migrate-vhvexbq` succeeded. No bootstrap rerun or direct operator database connection.
+- Promotion: run `38067200382`, successful. Healthy revision `connectwise-control-api--p0-6f01e1d29881` serves 100%; prior `connectwise-control-api--p0-3ca2f48d87d8` remains healthy at 0%.
+- The additive `/connectwise/v1` routing rule was applied and read back exactly. Existing MCP rule, Monotorr fallback and domain/certificate properties were preserved. `/health` remained 200; `/connectwise/v10` and `/connectwise/v1other` remained 404.
+- Portal-only run `38067395214` succeeded. Permanent portal smoke and deployed customer UI asset checks passed. Both `portal.monotorr.com` and the preserved `app.monotorr.com` bindings remain Ready.
+- Canonical customer smoke passed: anonymous account access 401, exact portal CORS and Microsoft login initiation with the approved callback/PKCE.
+- Authenticated MCP SDK regression passed: approved identity, initialize, protocol `2025-11-25`, tools/list, exact 39-tool set. Owner reported production ChatGPT's existing MCP connection connected and responding.
+- MCP remains `connectwise-mcp-pilot--0000005`, Single revision mode, 100% traffic, immutable digest `sha256:31fdec08dbe8a8a912275958e9314575745c7f77d0ae02cb8f3e364221f708f3`. Its configuration, credentials and tools were not changed.
+
+Delivery correction: before migration/candidate preparation, Azure CLI behavior showed moving an existing `candidate` label could prompt for confirmation. The tested correction adds `--yes` only to that explicitly approved label movement. It does not change revision mode, promotion order, permissions, candidate contents or MCP. The corrected source was rebuilt through the normal immutable workflow before deployment; the earlier build was never deployed.
+
+## Final Slice 1 acceptance — 2026-10-10
+
+The owner confirmed login/logout works for both test business identities and that opening the authenticated account endpoint after logout returns `{"error":"unauthorized"}`. The deployed handler returns HTTP 401 for that result. The first customer's status screen shows an active trial, ConnectWise Not configured, and Next action: Connect ConnectWise. No customer credentials were collected and no administrative privilege was granted.
+
+### Read-only database evidence
+
+Evidence was collected inside the existing healthy control API container, using the existing `databasePool(process.env)`, managed identity/Key Vault database connection and runtime DB role. Every diagnostic query ran in `BEGIN READ ONLY` with a ten-second statement timeout; transactions committed without writes and connections were closed. No migration-job arguments, schema, grants, passwords, Azure configuration or MCP settings were changed during this acceptance pass.
+
+| Test customer | Internal user ID | Account ID | Trial ID |
+| --- | --- | --- | --- |
+| First | `ae54acc4-31f7-436d-be29-3f17645e87d2` | `1509be5b-f14d-49cb-b530-e29aaff95f40` | `23cc74de-2272-4535-adf0-bba665287220` |
+| Second | `697d9d39-66b0-41af-8b3b-7b7e6267a1ea` | `ecce764e-4740-4398-ab00-d96ba494faf1` | `7c2467d8-077b-4d30-a095-4353a59fd102` |
+
+Each customer has exactly one membership, one Microsoft external identity and one trial. Total row counts: users **2**, accounts **2**, account_memberships **2**, external_identities **2**, entitlements **2**. Thus logout/re-login created no duplicate customer, account, membership, identity or entitlement rows.
+
+The first customer's trial remains `2026-10-10T16:27:57.011Z` → `2026-11-09T16:27:57.011Z`; its internal user/account/trial IDs match the pre-test baseline. The second customer's separate trial is `2026-10-10T16:46:03.510Z` → `2026-11-09T16:46:03.510Z`. Both intervals are exactly 30 days. The observed revoked-session counts were first **2**, second **1**; session hashes and cookie values were never queried or printed.
+
+Test-identity labels were correlated from the supplied profile emails solely for acceptance reporting. Email was not used for authentication or authorization; production mapping remains the stable Microsoft tenant/object identity. No profile emails, provider tokens, session cookies/hashes or API credentials are recorded in this evidence.
+
+### Isolation and logout verification
+
+The existing compiled production `CustomerStore.status` was invoked through the same read-only DB transaction: first-user/second-account and second-user/first-account contexts both failed closed; each customer's own context succeeded. This verifies the deployed ownership SQL, not a substitute or copied implementation. HTTP foreign-account query/header rejection and session replay behavior are covered by the passing regression tests; an authenticated live HTTP foreign-ID/replayed-cookie test was not completed in this acceptance pass.
+
+The separate automated browser run did not pass its first-identity check and is not counted as acceptance evidence. Live browser acceptance instead uses the owner's explicit confirmations, together with independent revoked-session and idempotent database evidence. The temporary browser was closed without exporting tokens, cookies, browser storage or screenshots.
+
+### MCP preservation
+
+Fresh anonymous health/metadata/challenge smoke passed. Read-only Azure inspection confirmed unchanged MCP revision `connectwise-mcp-pilot--0000005`, Single mode, 100% traffic and digest `sha256:31fdec08dbe8a8a912275958e9314575745c7f77d0ae02cb8f3e364221f708f3`. The authenticated SDK inventory captured during this same Slice 1 delivery passed initialize/tools/list and the exact **39 read-only / 0 write** set. Owner production ChatGPT dogfood reported the existing MCP connected and responding. No MCP app, routing rule, auth policy, credentials or tool registration was changed.
+
+### Consent metadata and pre-launch items
+
+At the owner's isolated request, the app registration and home-tenant enterprise application's display names were renamed to **Monotorr**. Client ID, account type, callback, credentials, permissions and publisher settings were verified unchanged. Publisher verification and removing the unverified label remain **pre-launch requirements**, along with accurate privacy/terms links on consent. They do not block Slice 1 acceptance. Do not request additional Microsoft Graph API permissions for login.
+
+Microsoft documents that the offline-access consent description can appear without requesting refresh tokens ([scope documentation](https://learn.microsoft.com/en-us/entra/identity-platform/scopes-oidc)). This flow requests only `openid profile email` and discards provider tokens after verified identity resolution. Console-log sampling found no token/authorization/callback markers but no application events; this sample alone is not proof that every platform logging destination is clean.
+
+### Operator diagnostic deviations and cleanup
+
+The earlier migration-job argument diagnostic did not start an execution; its temporary argument change was restored and verified. During the final acceptance pass, Azure exec first rejected command quoting and later rejected an oversized combined command at the WebSocket transport. Shorter transport-safe read-only commands succeeded. No architecture, application or permission change was needed. The migration job retains `node dist/database/cli.js` throughout final acceptance.
+
+**Slice 1 PASS.** The only repository closeout changes are this document and `V1_AZURE_DELIVERY_RUNBOOK.md`. No Slice 2 functionality, commit or deployment is authorized by this acceptance report.
