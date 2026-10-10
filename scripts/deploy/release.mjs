@@ -81,7 +81,7 @@ export async function release(action) {
         }
         if (candidate?.health !== "Healthy")
             throw new Error("candidate_not_ready");
-        await az(["containerapp", "revision", "label", "add", ...target, "--revision", revision, "--label", "candidate", "-o", "none"]);
+        await az(["containerapp", "revision", "label", "add", ...target, "--revision", revision, "--label", "candidate", "--yes", "-o", "none"]);
         const domain = current.fqdn.split(".").slice(1).join(".");
         await smoke(`https://${c.controlApi}---candidate.${domain}`, "control-api");
         await smoke("https://api.monotorr.com", "mcp");

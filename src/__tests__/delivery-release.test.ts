@@ -104,3 +104,24 @@ describe("selected revision activation during promotion", () => {
         expect(mocks.az.mock.calls.some(call => call[0].includes("activate") || call[0].includes("traffic"))).toBe(false);
     });
 });
+
+
+describe("approved reusable candidate label", () => {
+    it("moves the existing label without a second CLI prompt and pins production to the prior revision", async () => {
+        const original = mocks.az.getMockImplementation()!;
+        mocks.az.mockImplementation(async (args: string[]) => {
+            if (args.includes("execution")) return "Succeeded";
+            return original(args);
+        });
+        await expect(release("prepare")).resolves.toMatchObject({ prepared: true });
+        const calls = mocks.az.mock.calls.map(call => call[0] as string[]);
+        const label = calls.find(args => args.includes("label") && args.includes("add"))!;
+        expect(label).toContain("--yes");
+        expect(label).toContain("candidate");
+        expect(label).toContain(`connectwise-control-api--p0-${sha.slice(0,12)}`);
+        const pin = calls.findIndex(args => args.includes("traffic"));
+        expect(calls[pin]).toContain("connectwise-control-api--previous=100");
+        expect(pin).toBeLessThan(calls.indexOf(label));
+        expect(calls.filter(args => args.includes("traffic"))).toHaveLength(1);
+    });
+});
