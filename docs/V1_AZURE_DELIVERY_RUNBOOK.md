@@ -418,3 +418,30 @@ The earlier failed migration-job diagnostic was cleaned up; normal arguments rem
 Control promotion now compares committed executable MCP closures from the recorded prior control source SHA and the candidate SHA. The delivery job installs locked dependencies for the TypeScript-based proof. Unchanged control-only modules or shared type-only changes may pass only when MCP reachable module bytes/membership and dependency/compiler/container/ticket-card build inputs are unchanged. Computed imports, unprovable runtime loaders, compiler/history/input failures and any real MCP output change fail closed. Promotion requires clean committed source and retains the separate MCP review/ordinary-owner dogfood block for actual or ambiguous impact. No operator bypass flag or new deployment trigger is provided.
 
 Read-only repository inspection: `node scripts/deploy/mcp-impact.mjs HEAD --working-tree`. This is never accepted as production promotion evidence. The initial Slice 2 transport-injection review correctly reported `dist/api-client.js` changed. The subsequent control-only worker isolation restores the original client and reports `unchanged`, with all 26 executable MCP modules identical to `a0b6e6ff33f6347a17447065d12e89636b6ad8d2`. Live resource/deployment execution is still not authorized by this repository validation. The approved dedicated customer-vault proposal and unexecuted commands are recorded in [Slice 2 design](PHASE1_SLICE2_CONNECTWISE_CONNECTION.md). No existing MCP deployment/configuration/routing change is authorized by this guard correction.
+
+
+## Phase 1 Slice 2 delivery and acceptance — PASS (2026-10-10)
+
+Detailed evidence and security limits: [Slice 2 connection design](PHASE1_SLICE2_CONNECTWISE_CONNECTION.md#live-slice-2-acceptance--pass-2026-10-10).
+
+Source `e6dc9ae4a7cd277c52556e2ae913edcad23921d5` was delivered through manual OIDC build `38086442316`, migration/candidate `38086844634`, explicitly Codex-approved promotion `38087296309`, and portal publication `38087475489`. All successful-run verification/delivery jobs passed. Runtime revision `connectwise-control-api--p0-e6dc9ae4a7cd` is healthy at 100%; previous `connectwise-control-api--p0-6f01e1d29881` remains healthy at 0%. Immutable control digest: `sha256:6514b5a90f59b54a849c304c7343e9a7ae99edde6ff9e1f00f8c630aafb00fcc`.
+
+Migration execution `connectwise-migrate-inl8e0t` succeeded through manifest 0003. `prepare` sets `CW_CONNECTION_SETUP_ENABLED=true` only on the new control candidate after migration. Portal and control health/readiness, canonical anonymous denial/CORS/login-start checks passed. Portal remains `https://portal.monotorr.com`; shared control prefix and existing MCP route did not change.
+
+**Evidence pointers must be set in the protected GitHub environment**, where existing values override repository variables:
+
+```sh
+# Only after the respective reviewed workflow has succeeded.
+gh variable set CW_BUILT_RUN_ID --repo robleon-git/connectwise-mcp --env connectwise-production --body '<successful-build-run>'
+gh variable set CW_PREPARED_RUN_ID --repo robleon-git/connectwise-mcp --env connectwise-production --body '<successful-prepare-run>'
+```
+
+An initial prepare failed closed on a stale environment-level build pointer; it created no candidate and ran no migration. Correcting that nonsecret pointer allowed the successful retry; no digest/source guard was bypassed.
+
+Customer-only vault `monotorr-cw-creds-kv` is Standard/East US, private-only, RBAC-enabled, deny/no bypass, 90-day retention, purge-protected. Its private endpoint uses the existing East US subnet; dedicated `privatelink.vaultcore.azure.net` is linked only to the existing VNet with registration disabled. Only the new vault DNS record was added. Three-action custom writer is assigned only to the control system identity at this vault. No customer-vault grants to deployment/migration/bootstrap/MCP; existing `cw-mcp-kv` settings and assignments unchanged. Synthetic managed-identity write and soft-delete cleanup both passed without value reads. Incremental fixed estimate approximately **$7.80/month**, plus operations/DNS/traffic usage; no diagnostic-log ingestion added.
+
+The owner completed customer setup, confirmed Connected after re-login with no setup form, and confirmed the second account remains Not configured. Read-only runtime DB evidence verifies two distinct customer records/trials, unchanged trial expirations, exactly one connected account-scoped row with both version references, and denial in both cross-account directions through the actual deployed status implementation. No keys/cookies/tokens/bodies were read for diagnostics. No first-account keys were copied to the second account.
+
+MCP executable comparison proved all 26 modules/protected inputs unchanged against prior release; authenticated SDK inventory remained exactly 39 reads/0 writes. The owner confirmed pre-change success and post-change production ChatGPT `cw_test_connection → connected:true`. MCP image/config/routing/revision/traffic/probes, Descope and pilot credentials remain unchanged. Account-aware MCP was not implemented; the existing MCP still uses its separate pilot configuration.
+
+Retain additive migration/customer data on rollback; use reviewed control rollback evidence, never delete possibly active secrets. A new Slice 2 rollback exercise was not performed. Publisher verification/privacy/terms and representative Cloud/on-prem validation remain pre-launch requirements. No Slice 3 work is included. These closeout documentation changes are uncommitted pending owner review.

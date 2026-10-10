@@ -1,6 +1,6 @@
 # Phase 1 Slice 2 — one customer ConnectWise connection
 
-Status: repository implementation only; no live migration, vault, RBAC, deployment or customer connection acceptance performed. Starting checkpoint: `a0b6e6ff33f6347a17447065d12e89636b6ad8d2`, `phase1-hardening`.
+Status: live Slice 2 acceptance PASS on 2026-10-10. Source `e6dc9ae4a7cd277c52556e2ae913edcad23921d5` is deployed; final acceptance evidence is recorded below. Earlier repository checkpoints remain as chronological history. Starting checkpoint: `a0b6e6ff33f6347a17447065d12e89636b6ad8d2`, `phase1-hardening`.
 
 Scope authority: [V1 architecture](V1_PRODUCT_ARCHITECTURE.md), [implementation plan](V1_IMPLEMENTATION_PLAN.md), [delivery runbook](V1_AZURE_DELIVERY_RUNBOOK.md). The existing MCP remains on its pilot credentials and exactly 39 read tools / zero write tools. Account-aware MCP, Descope linking, credential reading by MCP, replacement/editing, billing and admin functionality are outside this slice.
 
@@ -53,20 +53,20 @@ The control API's system-assigned identity is the writer. No local/env credentia
 
 The existing portal adds a gated Connect ConnectWise button and four fields; both keys are password inputs. Keys are cleared on submission, are never saved in browser storage, and never redisplayed. Success refreshes account status; failures display allowlisted categories. Connected accounts have no replacement form.
 
-`CW_CONNECTION_SETUP_ENABLED=true` is the explicit activation flag; absent/false disables POST and setup UI. Enabling also requires `CW_CUSTOMER_FEATURES_ENABLED=true`. The feature has not been enabled live. Even disabled deployments of this source require migration 0003 before readiness/status checks.
+`CW_CONNECTION_SETUP_ENABLED=true` is the explicit activation flag; absent/false disables POST and setup UI. Enabling also requires `CW_CUSTOMER_FEATURES_ENABLED=true`. The feature is enabled on the deployed Slice 2 control revision. Even disabled deployments of this source require migration 0003 before readiness/status checks.
 
 Use the existing reviewed immutable GitHub OIDC build → migration/candidate → smoke → promotion → portal path, not a new deployment mechanism. The executable MCP-impact guard remains unchanged and now proves this control-only transport isolation leaves all 26 MCP runtime outputs identical. Committed clean source and the existing delivery/smoke/owner-dogfood requirements still apply. Existing MCP must not be redeployed as part of Slice 2.
 
-## Exact live resource proposal — NOT EXECUTED
+## Approved live resources — created 2026-10-10
 
-Read-only Azure verification found:
+Pre-change read-only Azure verification found:
 
 - Control API system-assigned principal: `eeed932b-44aa-4c2d-9f2a-6796b942961a`.
 - Existing East US subnet: `snet-monotorr-private-endpoints`, VNet `monotorr-prod-vnet`, RG `monotorr-dev-eastus-rg`; private endpoint network policies Disabled.
 - Existing `cw-mcp-kv` has no private endpoint and resolves through `data-prod-eus.vaultcore.azure.net`, not the proposed private-link zone. Its networking/permissions are unchanged.
 - No existing `privatelink.vaultcore.azure.net` zone was returned in the current subscription. Create only that dedicated zone and one link to the existing VNet; do not alter PostgreSQL DNS or public DNS.
 
-Proposed new resources, all product RG / East US where regional:
+Approved resources now created, all product RG / East US where regional:
 
 - Standard RBAC Key Vault `monotorr-cw-creds-kv`, public access Disabled, network ACL Deny, bypass None.
 - Soft-delete retention 90 days and purge protection enabled. Purge protection cannot later be disabled; deletion is recoverable, not an immediate cost/resource erasure mechanism.
@@ -86,9 +86,9 @@ The custom role has no management Actions and exactly these DataActions:
 
 No getSecret, purge, recovery, backup, restore, vault administration or RBAC permission. Resource/role creation is a separately approved operator management-plane action; no customer-vault permissions are added to GitHub. Existing application identity permissions remain intact; only the new-vault writer assignment is additive.
 
-### Exact proposed commands requiring separate approval
+### Approved creation commands — executed
 
-Run only after explicit live approval and subscription/name/provider validation. These commands contain no customer keys and create no secrets.
+These commands were executed after explicit owner approval and subscription/name/provider validation. They contain no customer keys and create no secrets.
 
 ```sh
 az account set --subscription 08a97e42-1e1f-4f33-95dc-36af13337091
@@ -125,7 +125,7 @@ az role assignment create --assignee-object-id eeed932b-44aa-4c2d-9f2a-6796b9429
 
 Verify the private endpoint is Approved, private DNS resolves the vault URI to the new private IP from the control API network, public access remains Disabled, and the custom assignment is exactly scoped. Validate required SDK write/delete operations using synthetic values only in a separately approved deployed test; never test with a secret-value GET. Stop on unsupported role actions, DNS collision, unexpected permission requirements or unsafe output.
 
-Private Link and the private DNS zone add recurring infrastructure charges; obtain the current Azure cost estimate before live resource approval. No paid resources have been created for this proposal. No public firewall/IP exceptions, DNS serving portal/API/MCP, existing vault assignments or existing MCP settings change.
+Verified incremental fixed estimate: approximately **$7.80/month** for the private endpoint ($7.30 at 730 hours) and private DNS zone ($0.50), plus usage-based Vault operations, DNS queries and Private Link traffic. No diagnostic-log ingestion was added. Public firewall exceptions, public DNS serving portal/API/MCP, existing vault assignments and existing MCP settings were not changed.
 
 ### Rollback / cleanup
 
@@ -137,9 +137,9 @@ Before any customer data exists, separately authorized cleanup may remove only t
 
 Repository tests cover strict inputs, DNS pinning/special ranges, GET-only validation with global Client ID, bounded TLS/redirect/body behavior, write/delete-only Vault operations and sanitized errors, role contract, HTTP isolation/CSRF/gating, portal field/output behavior and real PostgreSQL 18 concurrent/duplicate/foreign-account/expired-trial/partial-write constraints. Existing MCP/auth/config tests remain part of the full suite.
 
-Live acceptance is **pending**. No deployed migration result, Slice 2 revision/digest, first-customer connection or second-customer isolation evidence is claimed. After separate infrastructure and delivery approval, use the first customer's credentials through the real portal; leave the second account unconfigured if no second instance exists. Verify exactly one connected row, isolated second status, repeat visit, all existing MCP checks and ordinary owner ChatGPT dogfood. Never copy the first customer's keys into the second account to manufacture evidence.
+Live Slice 2 acceptance is **PASS**; deployment and bounded read-only evidence are recorded below. The first customer completed the real portal setup and repeat login; the second remains unconfigured and isolated. No first-customer keys were copied into the second account. Existing MCP still uses its separate pilot configuration; this acceptance does not claim account-aware MCP credential resolution.
 
-Cloud and on-prem representative read compatibility remains a pre-launch gate. Actual new-vault least-privilege SDK behavior/private networking and deployed browser setup require live verification. Publisher verification remains the Slice 1 pre-launch item, without added Graph permissions.
+Cloud and on-prem representative read compatibility remains a pre-launch gate. New-vault managed-identity write/delete behavior, private networking and deployed browser setup passed live verification. Publisher verification remains the Slice 1 pre-launch item, without added Graph permissions.
 
 Future handoff: a later approved account-aware MCP slice may resolve the entitled account's connected metadata/version references with a separate scoped reader identity. This slice grants none of that access and does not modify MCP credential resolution.
 
@@ -252,3 +252,61 @@ Before the first live Azure mutation, obtain and record a fresh ordinary-owner p
 Candidate-only setting regression tests passed: the setup flag appears only on the new control API update after migration, never on promotion/rollback/MCP actions. Final checkpoint: **73 focused delivery tests; 29 files / 599 full-suite tests passed**, with PostgreSQL 18 integration. Builds, lint, ticket-card output, both audits (zero vulnerabilities), diff check and unchanged 26-module MCP comparison passed. Pre-change live metadata/DNS/inherited-RBAC checks passed; vault name is available, no existing private vault DNS zone was found, and the approved control system principal is unchanged. Fresh manual owner dogfood confirmation remains a hard gate before the first Azure mutation.
 
 Installed Azure CLI preflight confirmed the vault network flag is `--default-action Deny` (the previously written longer spelling is not supported). This command spelling correction preserves the approved Deny policy and changes no resource design.
+
+
+## Live Slice 2 acceptance — PASS (2026-10-10)
+
+The owner confirmed the fresh ordinary-customer production ChatGPT pre-change connection test succeeded before resource creation. After deployment and customer setup, the owner explicitly confirmed `cw_test_connection` returned `connected:true` in production ChatGPT. This manual evidence is separate from SDK discovery checks.
+
+### Deployed source and delivery
+
+- Reviewed source: `e6dc9ae4a7cd277c52556e2ae913edcad23921d5`.
+- Successful manual OIDC build: `38086442316`; prepare: `38086844634`; separately approved promotion: `38087296309`; portal: `38087475489`. Verification and delivery jobs succeeded on all four successful runs.
+- Migration execution `connectwise-migrate-inl8e0t` succeeded, applying/checking the immutable manifest through `0003_connectwise_connections`. Job arguments and migration identity were not changed.
+- Healthy production control revision: `connectwise-control-api--p0-e6dc9ae4a7cd`, **100% traffic**. Prior healthy `connectwise-control-api--p0-6f01e1d29881`: **0%**.
+- Immutable image: `monotorrdevacr6689.azurecr.io/connectwise-control-api@sha256:6514b5a90f59b54a849c304c7343e9a7ae99edde6ff9e1f00f8c630aafb00fcc`.
+- `CW_CONNECTION_SETUP_ENABLED=true` was set only on the new control candidate after migration. Candidate and promoted health/readiness smokes passed. Permanent portal `https://portal.monotorr.com` and canonical anonymous denial/CORS/Microsoft-login-start smokes passed.
+
+The existing manual/OIDC path and scoped permissions were preserved. No new GitHub reviewer gate was introduced. An initial prepare run (`38086628067`) correctly rejected an old build artifact before migration/candidate creation: the protected environment's build pointer overrode the repository-level pointer. Updating the **environment-level** `CW_BUILT_RUN_ID` to the successful reviewed build fixed the retry. `CW_PREPARED_RUN_ID` in `connectwise-production` now identifies `38086844634`. Use environment-level evidence pointers for subsequent delivery actions; source/digest checks remain mandatory.
+
+### Customer-vault boundary
+
+The new Standard East US vault has RBAC enabled, public access Disabled, ACL default Deny, bypass None, 90-day soft delete and purge protection. Private endpoint `pe-monotorr-cw-creds-kv` is Approved/Succeeded in the existing subnet. Its dedicated private DNS zone/link completed with registration disabled and only the new vault record added; resolution from the control API network matched the endpoint.
+
+Custom role definition ID `470bcdbd-de75-4a5c-afbc-2fdd8463864d` has exactly the three approved DataActions and no management Actions. Its sole customer-vault assignment is to control system identity `eeed932b-44aa-4c2d-9f2a-6796b942961a`, at the new vault scope. Inherited roles were reviewed and contain no data-plane secret access. GitHub, migration, bootstrap and MCP identities received no customer-vault assignment. Existing `cw-mcp-kv` properties and vault/secret-scoped assignments match the pre-change baseline.
+
+A bounded candidate-only smoke invoked the actual compiled writer with synthetic values in memory: write verified **true**, cleanup verified **true**. No value GET, recovery or purge occurred. The synthetic pair is soft-deleted under the approved retention policy. Subsequent real customer setup succeeded through the same writer. No customer-key values were retrieved for diagnostics.
+
+### Customer and database evidence
+
+The owner reported first-customer Connected, correct safe host/company metadata, persistence across logout/re-login, and absence of the setup form afterward. The second customer's own portal remains Not configured with setup available and no first-customer connection metadata.
+
+Bounded `BEGIN READ ONLY` diagnostics used the deployed runtime `databasePool(process.env)` with a five-second statement timeout. No migration-job arguments, DB privileges, schema or customer records were modified.
+
+| Evidence | Result |
+| --- | --- |
+| Users / accounts / memberships / Microsoft identities / trials | 2 / 2 / 2 / 2 / 2; no duplicates |
+| Connected connection rows | Exactly 1; no pending or cleanup-required row |
+| First account | `1509be5b-f14d-49cb-b530-e29aaff95f40` |
+| Connected row | `494a76b7-197e-42e2-900d-66a69e3172d3` |
+| Stored public/private version-reference presence | Both true; values not printed |
+| Second account | `ecce764e-4740-4398-ab00-d96ba494faf1`; no connection row |
+| Original trial IDs / expirations | Unchanged from Slice 1; both 30-day durations valid |
+| Deployed ConnectionStore own-status checks | First connected; second not_configured |
+| Deployed ConnectionStore cross-account checks | Both denied with entitlement_required |
+
+First trial remains `23cc74de-2272-4535-adf0-bba665287220`, expiring `2026-11-09T16:27:57.011Z`; second remains `7c2467d8-077b-4d30-a095-4353a59fd102`, expiring `2026-11-09T16:46:03.510Z`. No emails, keys, secret-reference values, session hashes, cookies or tokens were printed by the evidence queries.
+
+The cross-account evidence invokes the actual compiled production status implementation inside a read-only transaction; it does not claim a live authenticated HTTP cookie-replay or foreign-account injection test. Those HTTP and entitlement-before-validation/storage failure cases are covered by the regression suite. Portal key clearing/no redisplay is covered by code/tests and the reported connected status screen; no browser storage or request bodies were exported. Only one customer's on-prem instance was configured; second-instance/Cloud compatibility remains a pre-launch gate.
+
+### MCP preservation and validation
+
+The comparator against actual previous release source `6f01e1d29881212e736472b7610dd1c6d64cd8ab` returned `impact: unchanged`, no changed outputs, **26 reachable modules**, with protected dependency/build inputs unchanged. Authenticated live SDK discovery passed before and after control promotion, negotiated `2025-11-25`, and matched exactly **39 read-only tools / 0 writes**. Owner pre/post production ChatGPT dogfood passed.
+
+Final read-only Azure comparison confirmed unchanged MCP image, ingress/routing, revision `connectwise-mcp-pilot--0000005`, Single mode, traffic and probes. MCP digest remains `sha256:31fdec08dbe8a8a912275958e9314575745c7f77d0ae02cb8f3e364221f708f3`. No Descope or pilot credentials changed; MCP has no customer-vault access.
+
+Repository checkpoint validation: 73 focused delivery tests; **29 files / 599 full tests** with PostgreSQL 18 integration; backend/portal/UI builds, lint, ticket-card validation and diff check passed. Production and full audits reported **0 vulnerabilities**. Successful deployment runs repeated the normal verification gates. Final documentation-only closeout requires a diff check and owner review before any separate commit.
+
+Azure exec transport required bounded, shortened quote-free commands. Terminal/quoting/oversized-command failures produced no acceptance evidence; subsequent bounded commands succeeded. A broad interactive shell was rejected by automatic approval review and was not used. No application or permission change was needed to collect evidence.
+
+Rollback remains control/portal-only: retain migration 0003 and customer-vault data; restore the recorded previous revision through the existing workflow if needed. Do not delete active customer credentials, alter shared infrastructure or purge. No rollback exercise is claimed for this Slice 2 release. No account-aware MCP or Slice 3 work began.
