@@ -1,1 +1,1 @@
-export const MIGRATIONS = Object.freeze([{ id: "0001_delivery_foundation", file: "0001_delivery_foundation.sql", checksum: "628acc7d80cd8134a6bb25c8adfa1b0a58b99c12c94acfc6377aaf94790544f1" }]);
+export const MIGRATIONS = Object.freeze([{ id: "0001_delivery_foundation", file: "0001_delivery_foundation.sql", checksum: "628acc7d80cd8134a6bb25c8adfa1b0a58b99c12c94acfc6377aaf94790544f1" }, { id: "0002_customer_foundation", file: "0002_customer_foundation.sql", checksum: "6e2682435970f69e090e5d4dd52e01eea33d10a649db3302f93ac6b46b070651" }]);

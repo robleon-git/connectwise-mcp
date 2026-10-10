@@ -68,7 +68,7 @@ export async function release(action) {
         if (!migrated)
             throw new Error("migration_not_succeeded");
         const suffix = `p0-${built.sha.slice(0, 12)}`;
-        await az(["containerapp", "update", ...target, "--image", built.image, "--revision-suffix", suffix, "-o", "none"]);
+        await az(["containerapp", "update", ...target, "--image", built.image, "--revision-suffix", suffix, ...(c.customerLoginClientId ? ["--set-env-vars", "CW_CUSTOMER_FEATURES_ENABLED=true", `CW_PORTAL_LOGIN_CLIENT_ID=${c.customerLoginClientId}`] : []), "-o", "none"]);
         const revision = `${c.controlApi}--${suffix}`;
         let candidate;
         for (let i = 0; i < 30; i++) {

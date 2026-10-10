@@ -1,0 +1,40 @@
+import { expect } from "vitest";
+import type { Pool } from "pg";
+import { CustomerStore, hashToken } from "../../control-plane/auth/store.js";
+const a = { tenantId: "11111111-1111-4111-8111-111111111111", objectId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", name: "Synthetic A", email: "synthetic-a@example.invalid" };
+const b = { ...a, objectId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", name: "Synthetic B" };
+export async function verifyCustomerDatabase(runtime: Pool, migrator: Pool) {
+  const store = new CustomerStore(runtime);
+  const initial = await Promise.all(Array.from({ length: 4 }, () => store.login(a)));
+  expect(new Set(initial.map(value => value.context.accountId)).size).toBe(1);
+  expect(new Set(initial.map(value => value.context.userId)).size).toBe(1);
+  const trial = await store.status(initial[0].context);
+  expect(trial.entitlement).toMatchObject({ allowed: true, source: "trial", status: "active" });
+  const changed = await store.login({ ...a, email: "changed@example.invalid" });
+  expect(changed.context.accountId).toBe(initial[0].context.accountId);
+  expect((await store.status(changed.context)).entitlement.expiresAt).toBe(trial.entitlement.expiresAt);
+  const separate = await store.login(b);
+  expect(separate.context.accountId).not.toBe(initial[0].context.accountId);
+  await expect(store.status({ ...initial[0].context, accountId: separate.context.accountId })).rejects.toThrow("customer_auth_failed");
+  const rows = (await runtime.query("SELECT (SELECT count(*) FROM public.users) AS users,(SELECT count(*) FROM public.accounts) AS accounts,(SELECT count(*) FROM public.account_memberships) AS memberships,(SELECT count(*) FROM public.entitlements WHERE source='trial') AS trials")).rows[0];
+  expect(rows).toEqual({ users: "2", accounts: "2", memberships: "2", trials: "2" });
+  expect((await runtime.query("SELECT extract(epoch FROM ends_at-starts_at) AS seconds FROM public.entitlements")).rows.every(row => Number(row.seconds) === 30 * 24 * 60 * 60)).toBe(true);
+  const stored = (await runtime.query("SELECT token_hash FROM public.auth_sessions")).rows.map(row => row.token_hash);
+  expect(stored).toContain(hashToken(changed.token)); expect(stored).not.toContain(changed.token);
+  expect(await store.session(changed.token)).toEqual(changed.context);
+  expect(await store.session("not-a-session")).toBeNull();
+  await store.logout(changed.token); expect(await store.session(changed.token)).toBeNull();
+  await migrator.query("UPDATE public.auth_sessions SET expires_at=now()-interval '1 hour' WHERE token_hash=$1", [hashToken(initial[0].token)]);
+  expect(await store.session(initial[0].token)).toBeNull();
+  await migrator.query("UPDATE public.entitlements SET starts_at=now()-interval '31 days',ends_at=now()-interval '1 day' WHERE account_id=$1", [separate.context.accountId]);
+  expect((await store.status(separate.context)).entitlement).toMatchObject({ allowed: false, status: "expired" });
+  await store.beginFlow("synthetic-flow"); await store.consumeFlow("synthetic-flow");
+  await expect(store.consumeFlow("synthetic-flow")).rejects.toThrow();
+  // Membership changes are observed by subsequent sessions; no stale owner snapshot.
+  await migrator.query("DELETE FROM public.auth_sessions WHERE user_id=$1", [separate.context.userId]);
+  await migrator.query("DELETE FROM public.account_memberships WHERE user_id=$1", [separate.context.userId]);
+  await expect(store.login(b)).rejects.toThrow();
+  await expect(runtime.query("UPDATE public.entitlements SET status='active'")).rejects.toThrow();
+  await expect(runtime.query("UPDATE public.account_memberships SET role='admin'")).rejects.toThrow();
+  await expect(runtime.query("CREATE TABLE public.forbidden_again(id int)")).rejects.toThrow();
+}

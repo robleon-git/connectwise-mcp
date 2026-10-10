@@ -1,6 +1,6 @@
 # Monotorr ConnectWise MCP — V1 Implementation Plan
 
-Status: Phase 0 repository work approved; live resource actions require prior review; no commit or deployment authorized before repository review. Phases 1–7 remain future scope.
+Status: Phase 0 accepted. Phase 1 Slice 1 is approved and its repository implementation is locally validated; source publication/deployment review and live acceptance remain pending. No later slice or phase is authorized.
 
 Scope authority: [V1 Product Architecture](V1_PRODUCT_ARCHITECTURE.md), including Section 37 (admin identity separation) and Section 38 (Cloud and customer-hosted support). The architecture takes precedence over this plan.
 
@@ -257,3 +257,10 @@ Every MCP-affecting release requires the manual [owner dogfood smoke](OWNER_DOGF
 - Accept registry-scoped AcrPush for the dedicated environment-federated GitHub OIDC identity while the shared ACR uses LegacyRegistryPermissions. No Phase 0 ABAC migration, ACR admin credential use, subscription Owner grant, or changes to existing pull assignments.
 
 Exact resource placement/actions, bootstrap recovery limits and scoped permissions are in [the delivery runbook](V1_AZURE_DELIVERY_RUNBOOK.md). These decisions introduce no Phase 1 customer functionality and do not change the V1 product architecture baseline.
+
+
+## Phase 1 Slice 1 permanent-host design update
+
+Approved portal origin: `https://portal.monotorr.com`; approved API origin: `https://api.monotorr.com`. Proposed dedicated API namespace: `/connectwise/v1`, with Web callback `https://api.monotorr.com/connectwise/v1/auth/callback`. No separate control API hostname is proposed. See [Slice 1 auth design](PHASE1_SLICE1_AUTH_DESIGN.md) for exact-origin CORS, host-only scoped cookies and the additive existing-router proposal.
+
+The owner resolved the previously discovered portal conflict: preserve `app.monotorr.com` on `monotorr-portal`, bind `portal.monotorr.com` only to `connectwise-portal`. The separate organizational-account browser registration is approved and created; no Graph API permissions or personal accounts are enabled. No admin identity is designated or required for this slice; admin functionality remains absent. Identity, trial and session code resides only in the separate control API. Existing MCP remains unchanged. See the Slice 1 design and delivery runbook for implemented modules and pending deployed acceptance.

@@ -365,3 +365,33 @@ PostgreSQL 18 is the owner-approved V1 baseline for all new deployments and Phas
 ## Server naming decision — 2026-10-10
 
 All intended live operations target `monotorr-cw-db-01.postgres.database.azure.com` / ARM server `monotorr-cw-db-01`, database `connectwise`, region North Central US, PostgreSQL 18, B1ms and administrator `cw_bootstrap_admin`. The failed name `monotorr-cw-prod-pg` remains only in historical troubleshooting/preflight records; do not use it as a deployment target. The portal remains East US 2, and API/jobs/VNet/private endpoint remain East US. Existing endpoint name `pe-connectwise-prod-postgres` is unchanged; its target and DNS record must reference the new server. `deployment/azure/config.json` retains `location=eastus` because it controls compute, not PostgreSQL provisioning. No Azure resources are created or changed by this update.
+
+
+## Phase 1 Slice 1 permanent origins and pending routing action
+
+The owner approved `https://portal.monotorr.com` for the customer portal and existing `https://api.monotorr.com` for the control-plane API. Proposed API namespace: `/connectwise/v1`; exact Microsoft Web callback: `https://api.monotorr.com/connectwise/v1/auth/callback`. Return URL/CORS origin: `https://portal.monotorr.com`. Session cookie is host-only (no Domain), Secure/HttpOnly/SameSite=Lax and scoped to `/connectwise/v1`, with a distinct ConnectWise customer name. Runtime configuration, tests and portal API base must use these origins when implemented, never the Phase 0 generated hosts as customer auth URLs. The generated control FQDN remains the deployment probe target.
+
+Read-only ARM verification on 2026-10-10 resolves the older routing unknown: environment route `monotorr-api-routing` binds `api.monotorr.com` and its existing managed certificate. Its exact MCP paths target `connectwise-mcp-pilot`; its `/` fallback targets `monotorr-api-prod`. Proposed additive middle rule targets `connectwise-control-api` only for exact `/connectwise/v1` and its slash-boundary prefix, without rewriting paths. Preserve the existing rules/domain/certificate and fallback verbatim. Do not grant environment Contributor to the deployment identity; route changes require a separately reviewed operator action. No API DNS change, MCP revision/traffic/probe change, Monotorr API deployment or new gateway is proposed.
+
+**Resolved portal placement:** Preserve `app.monotorr.com` on existing `monotorr-portal`. The owner approved `portal.monotorr.com` for `connectwise-portal` and confirmed the Cloudflare DNS-only CNAME to `black-bush-04c7a8b0f.5.azurestaticapps.net`. The authorized custom-domain operation targets only that new hostname/app. Require Valid status and HTTPS smoke before live browser testing.
+
+Separate customer Entra registration: client ID `4405ef16-dc89-4385-8a84-cda2a52274cf`, organizational accounts only, exact Web callback above, no implicit token flow or Graph/API permissions. Browser credentials are stored only in `cw-portal-oidc-client-secret` and `cw-browser-flow-key`. Runtime identity `eeed932b-44aa-4c2d-9f2a-6796b942961a` gets Secrets User only on these two individual secret resources in addition to its existing DB secret. No deployment/migrator/MCP identity gets these grants.
+
+Reviewed operator setup commands (never reveal values):
+
+```sh
+node scripts/deploy/provision-browser-auth.mjs --approved-slice1
+# Nonsecret scope/reference only; repeat for the two browser secret names.
+az role assignment create --assignee-object-id eeed932b-44aa-4c2d-9f2a-6796b942961a --assignee-principal-type ServicePrincipal --role 'Key Vault Secrets User' --scope '/subscriptions/08a97e42-1e1f-4f33-95dc-36af13337091/resourceGroups/monotorr-dev-eastus-rg/providers/Microsoft.KeyVault/vaults/cw-mcp-kv/secrets/cw-portal-oidc-client-secret' --output none
+az role assignment create --assignee-object-id eeed932b-44aa-4c2d-9f2a-6796b942961a --assignee-principal-type ServicePrincipal --role 'Key Vault Secrets User' --scope '/subscriptions/08a97e42-1e1f-4f33-95dc-36af13337091/resourceGroups/monotorr-dev-eastus-rg/providers/Microsoft.KeyVault/vaults/cw-mcp-kv/secrets/cw-browser-flow-key' --output none
+```
+
+The provisioning helper refuses existing secret names and makes no changes to ConnectWise secrets. Failure removes the newly issued app credential where possible; partial Vault writes require reviewed reconciliation. An explicit cleanup-required result is a hard stop. Rotate the 90-day credential before expiry via the same secure in-memory/Key Vault policy, then restart a reviewed API revision; do not add its value to argv/env files. Flow-key rotation expires pending ten-minute browser login transactions but not opaque sessions.
+
+Deliver through the existing manual workflow after source review/commit: build → prepare (private migration and candidate) → smoke → promote → portal. `prepare` sets `CW_CUSTOMER_FEATURES_ENABLED=true` and only the nonsecret `CW_PORTAL_LOGIN_CLIENT_ID` on the control API candidate. No MCP image, settings or routing changes are part of candidate deployment. Existing regression gates, OIDC principal and Azure scopes remain unchanged. The environment has no duplicate GitHub reviewer gate; approvals remain inside Codex.
+
+Apply only the separately reviewed additive route using `node scripts/deploy/customer-routing.mjs plan`, review ignored `.delivery/customer-routing.json`, then `node scripts/deploy/customer-routing.mjs apply`. Drift fails closed. Rollback removes only that addition with `node scripts/deploy/customer-routing.mjs rollback`; API revision rollback does not revert shared routing. No GitHub environment-write permission is added. Preserve both existing rules and certificate/domain fields verbatim.
+
+After promotion, run `node scripts/deploy/customer-smoke.mjs` (sanitized anonymous denial/CORS/login-start facts only) and portal smoke against `https://portal.monotorr.com`. Complete real Microsoft login, logout, repeat login and second-business-identity isolation; run the exact MCP inventory helper and owner dogfood. For private DB acceptance, execute the same migration image/job with the sole additional argument `--verify-slice1`, collect only `customer.evidence` counts and booleans, then restore its normal `dist/database/cli.js` arguments. No external SQL connection, passwords, permanent admin job, schema bypass or row/profile dump.
+
+API readiness requires the two immutable migration checksums; older compatible health-only revisions tolerate additive schema and remain available for rollback. A rollback does not delete customer records or secrets. No PASS claim until all deployed acceptance evidence is recorded. Detailed authentication and route JSON: [Slice 1 auth design](PHASE1_SLICE1_AUTH_DESIGN.md).

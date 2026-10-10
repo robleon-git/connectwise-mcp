@@ -17,5 +17,9 @@
   "virtualNetwork": "monotorr-prod-vnet",
   "privateEndpointSubnet": "snet-monotorr-private-endpoints",
   "privateEndpoint": "pe-connectwise-prod-postgres",
-  "privateDnsZone": "privatelink.postgres.database.azure.com"
+  "privateDnsZone": "privatelink.postgres.database.azure.com",
+  "portalOrigin": "https://portal.monotorr.com",
+  "controlApiOrigin": "https://api.monotorr.com",
+  "controlApiPrefix": "/connectwise/v1",
+  "customerLoginClientId": "4405ef16-dc89-4385-8a84-cda2a52274cf"
 }

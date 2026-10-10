@@ -61,6 +61,7 @@
     "@modelcontextprotocol/sdk": "^1.32.0",
     "express": "^5.2.1",
     "jose": "^6.2.10",
+    "openid-client": "^6.8.8",
     "pg": "^8.23.1",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",

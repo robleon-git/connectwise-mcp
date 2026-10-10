@@ -1286,3 +1286,12 @@ Use manually triggered GitHub-to-Azure workload identity/OIDC deployment authent
 During Phase 0, preserve the existing `https://api.monotorr.com/mcp` DNS, custom-domain bindings, routing, Descope configuration, path, revision mode, traffic, and probes. Capture the baseline and smoke-test it. Configure proper startup/readiness/liveness only for the new control API. Introduce MCP candidate/promotion changes only when an actual reviewed MCP application release requires them.
 
 Every release affecting MCP authentication, identity/account resolution, entitlement enforcement, ConnectWise credential/connection resolution, client construction, tool registration, or execution requires a manual owner dogfood smoke: Rob's ordinary customer identity uses production ChatGPT through the production MCP endpoint to execute a known read against Rob's own ConnectWise instance, without administrative privileges. See [Owner dogfood release gate](OWNER_DOGFOOD_SMOKE_TEST.md).
+
+
+## Approved Phase 1 customer-facing hostname decision
+
+Customer portal: `https://portal.monotorr.com`. Control-plane API: existing `https://api.monotorr.com`, under a dedicated ConnectWise path namespace separate from existing Monotorr routes. Preserve `https://api.monotorr.com/mcp` unchanged. Do not introduce another control API hostname without a demonstrated technical limitation.
+
+The proposed namespace, exact browser redirect, CORS/session contract and resolved portal placement are recorded in [Slice 1 auth design](PHASE1_SLICE1_AUTH_DESIGN.md). Approving a hostname does not implicitly authorize replacing another product's existing portal binding.
+
+The existing Monotorr 365 portal retains `https://app.monotorr.com`; the owner explicitly rejected detaching/transferring it. ConnectWise uses `https://portal.monotorr.com` and a separate organizational-accounts-only browser Entra registration. No admin-only identity is designated or required in Slice 1, and no ordinary customer has admin access.

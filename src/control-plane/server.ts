@@ -1,6 +1,8 @@
 import express from "express";
+import type { Router } from "express";
+import { API_PREFIX } from "./auth/identity.js";
 import type { Express } from "express";
-export function createControlApi(checkReady: () => Promise<boolean>): {
+export function createControlApi(checkReady: () => Promise<boolean>, customer?: Router): {
     app: Express;
     drain: () => void;
 } {
@@ -23,7 +25,8 @@ export function createControlApi(checkReady: () => Promise<boolean>): {
             }
         res.status(ready && !draining ? 200 : 503).json({ status: ready && !draining ? "ready" : "unavailable" });
     });
-    // No body parser, proxy, customer routes, signup, billing, or admin API in Phase 0.
+    if (customer) app.use(API_PREFIX, customer);
+    // Unimplemented product and MCP routes remain unavailable.
     app.use((_req, res) => { res.status(404).json({ error: "not_available" }); });
     return { app, drain: () => { draining = true; } };
 }
