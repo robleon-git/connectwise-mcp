@@ -3,6 +3,7 @@ import { Pool } from "pg";
 import { migrate, loadMigrations } from "../database/migrationRunner.js";
 import { bootstrapDatabase, BOOTSTRAP_PENDING } from "../database/bootstrap.js";
 import { verifyCustomerDatabase } from "./fixtures/customer-database.js";
+import { verifyConnectionDatabase } from "./fixtures/connection-database.js";
 import { MIGRATIONS } from "../database/migrationManifest.js";
 describe.skipIf(process.env.CW_DATABASE_INTEGRATION !== "true")("real disposable PostgreSQL 18 migrations", () => {
     it("bootstraps a private-job-shaped non-superuser admin, migrates, and rejects runtime administration", async () => {
@@ -24,10 +25,11 @@ describe.skipIf(process.env.CW_DATABASE_INTEGRATION !== "true")("real disposable
             expect((await admin.query("SELECT pg_has_role('cw_bootstrap_admin','cw_migrator','SET') AS member")).rows[0].member).toBe(false);
             migrator = new Pool({ ...local, database: "connectwise", user: "cw_migrator", password: secrets.get("cw-migration-db-password") });
             const migrations = await loadMigrations(MIGRATIONS, new URL("../../database/migrations/", import.meta.url));
-            expect((await migrate(migrator, migrations)).applied).toBe(2);
+            expect((await migrate(migrator, migrations)).applied).toBe(3);
             runtime = new Pool({ ...local, database: "connectwise", user: "cw_control", password: secrets.get("cw-control-db-password") });
-            expect((await runtime.query("SELECT id FROM public.schema_migrations")).rows).toHaveLength(2);
+            expect((await runtime.query("SELECT id FROM public.schema_migrations")).rows).toHaveLength(3);
             await verifyCustomerDatabase(runtime, migrator);
+            await verifyConnectionDatabase(runtime, migrator);
             await expect(runtime.query("DELETE FROM public.schema_migrations")).rejects.toThrow();
             await expect(runtime.query("CREATE TABLE public.forbidden(id int)")).rejects.toThrow();
             await expect(runtime.query("SET ROLE cw_migrator")).rejects.toThrow();

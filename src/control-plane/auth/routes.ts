@@ -1,4 +1,6 @@
-import { Router } from "express";
+import { Router, json } from "express";
+import { ConnectionError } from "../../connections/errors.js";
+import type { ConnectionService } from "../../connections/service.js";
 import { randomBytes } from "node:crypto";
 import { EncryptJWT, jwtDecrypt } from "jose";
 import { API_ORIGIN, API_PREFIX, CALLBACK_URI, PORTAL_ORIGIN, CustomerAuthError } from "./identity.js";
@@ -13,7 +15,7 @@ export function readCookie(header: string | undefined, name: string) {
   if (found.length !== 1) return undefined;
   return found[0].slice(name.length + 1);
 }
-export function customerRoutes(store: CustomerStore, provider: IdentityProvider, flowKey: Uint8Array) {
+export function customerRoutes(store: CustomerStore, provider: IdentityProvider, flowKey: Uint8Array, connections?: {service:Pick<ConnectionService,"setup"|"status">;enabled:boolean}) {
   if (flowKey.length !== 32) throw new CustomerAuthError();
   const router = Router();
   router.use((req, res, next) => {
@@ -69,13 +71,32 @@ export function customerRoutes(store: CustomerStore, provider: IdentityProvider,
       res.status(204).end();
     } catch { res.status(503).json({ error: "unavailable" }); }
   });
+  router.post("/connectwise/connection", async (req,res) => {
+    try {
+      if(!connections?.enabled) {res.status(404).json({error:"not_available"});return;}
+      if(Object.keys(req.query).length || req.get("X-Account-Id")) {res.status(400).json({error:"invalid_request"});return;}
+      const context=await store.session(readCookie(req.get("Cookie"),SESSION_COOKIE));
+      if(!context){res.status(401).json({error:"unauthorized"});return;}
+      // Parse submitted keys only after authentication; reject compressed/oversized bodies.
+      json({limit:"8kb",inflate:false,strict:true})(req,res,error=>{
+        if(error){res.status(400).json({error:"invalid_input"});return;}
+        void connections.service.setup(context,req.body).then(result=>res.status(201).json({connectwise:result})).catch(error=>{
+          if(error instanceof ConnectionError)res.status(error.httpStatus).json({error:error.code});else res.status(503).json({error:"unavailable"});
+        }).finally(()=>{req.body=undefined;});
+      });
+    } catch {res.status(503).json({error:"unavailable"});}
+  });
   for (const path of ["/session", "/account/status"]) router.get(path, async (req, res) => {
     try {
       // Foreign account IDs are not accepted, even if ignored by the SQL query.
       if (Object.keys(req.query).length || req.get("X-Account-Id")) { res.status(400).json({ error: "invalid_request" }); return; }
       const context = await store.session(readCookie(req.get("Cookie"), SESSION_COOKIE));
       if (!context) { res.status(401).json({ error: "unauthorized" }); return; }
-      res.json(path === "/session" ? { authenticated: true, account: { id: context.accountId, name: context.name } } : await store.status(context));
+      if(path==="/session"){res.json({authenticated:true,account:{id:context.accountId,name:context.name}});return;}
+      const status=await store.status(context);
+      const connection=connections ? await connections.service.status(context) : status.connectwise;
+      res.json({...status,connectwise:{...connection,setupAvailable:!!connections?.enabled&&status.entitlement.allowed},
+        nextAction:connection.status==="connected"?"connect_ai_client":"connect_connectwise"});
     } catch { res.status(503).json({ error: "unavailable" }); }
   });
   return router;

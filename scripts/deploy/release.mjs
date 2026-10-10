@@ -1,6 +1,7 @@
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
-import { configuration, az, execute, assertSubscription, immutableImage, featureOnlyDeployment, needsDogfood } from "./common.mjs";
+import { configuration, az, execute, assertSubscription, immutableImage, featureOnlyDeployment } from "./common.mjs";
+import { assessMcpImpact } from "./mcp-impact.mjs";
 import { smoke } from "./smoke.mjs";
 const manifestPath = ".delivery/control-release.json";
 async function imageAndSource(c, mode) {
@@ -68,7 +69,7 @@ export async function release(action) {
         if (!migrated)
             throw new Error("migration_not_succeeded");
         const suffix = `p0-${built.sha.slice(0, 12)}`;
-        await az(["containerapp", "update", ...target, "--image", built.image, "--revision-suffix", suffix, ...(c.customerLoginClientId ? ["--set-env-vars", "CW_CUSTOMER_FEATURES_ENABLED=true", `CW_PORTAL_LOGIN_CLIENT_ID=${c.customerLoginClientId}`] : []), "-o", "none"]);
+        await az(["containerapp", "update", ...target, "--image", built.image, "--revision-suffix", suffix, ...(c.customerLoginClientId ? ["--set-env-vars", "CW_CONNECTION_SETUP_ENABLED=true", "CW_CUSTOMER_FEATURES_ENABLED=true", `CW_PORTAL_LOGIN_CLIENT_ID=${c.customerLoginClientId}`] : []), "-o", "none"]);
         const revision = `${c.controlApi}--${suffix}`;
         let candidate;
         for (let i = 0; i < 30; i++) {
@@ -109,8 +110,10 @@ export async function release(action) {
         if (!/^[a-f0-9]{40}$/.test(manifest.previousSha || ""))
             throw new Error("previous_source_unknown");
         await execute("git", ["merge-base", "--is-ancestor", manifest.previousSha, sha]);
-        const changed = (await execute("git", ["diff", "--name-only", manifest.previousSha, sha])).stdout.trim().split("\n");
-        if (needsDogfood(changed))
+        if ((await execute("git", ["status", "--porcelain"])).stdout.trim())
+            throw new Error("dirty_release_source");
+        const impact = await assessMcpImpact(manifest.previousSha, sha);
+        if (impact.impact !== "unchanged")
             throw new Error("mcp_affecting_release_requires_separate_review_and_owner_dogfood");
     }
     if (!selected.active)

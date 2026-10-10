@@ -97,6 +97,9 @@ jobs:
         run: |
           test -n "$BUILD_RUN"
           gh run download "$BUILD_RUN" --name phase0-release --dir .delivery
+      - name: Install locked delivery dependencies
+        if: inputs.action != 'portal'
+        run: npm ci --ignore-scripts
       - name: Control API artifact and release
         if: inputs.action != 'portal'
         run: |
