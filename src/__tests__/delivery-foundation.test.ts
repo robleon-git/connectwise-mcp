@@ -10,7 +10,7 @@ import { smoke } from "../../scripts/deploy/smoke.mjs";
 // @ts-expect-error Local operator scripts use JavaScript.
 import { configuration, immutableImage, featureOnlyDeployment, needsDogfood } from "../../scripts/deploy/common.mjs";
 // @ts-expect-error Local operator renderer uses JavaScript.
-import { computeResources } from "../../scripts/deploy/render-resources.mjs";
+import { computeResources, bootstrapResource } from "../../scripts/deploy/render-resources.mjs";
 async function api(check: () => Promise<boolean>) {
     const service = createControlApi(check);
     const server = createServer(service.app);
@@ -66,7 +66,7 @@ describe("Phase 0 health-only control API", () => {
         }
     });
 });
-const production = { NODE_ENV: "production", CW_DB_HOST: "monotorr-cw-prod-pg.postgres.database.azure.com", CW_DB_NAME: "connectwise", CW_DB_USER: "cw_control", CW_KEY_VAULT_URI: "https://cw-mcp-kv.vault.azure.net", CW_DB_PASSWORD_SECRET: "cw-control-db-password" };
+const production = { NODE_ENV: "production", CW_DB_HOST: "monotorr-cw-db-01.postgres.database.azure.com", CW_DB_NAME: "connectwise", CW_DB_USER: "cw_control", CW_KEY_VAULT_URI: "https://cw-mcp-kv.vault.azure.net", CW_DB_PASSWORD_SECRET: "cw-control-db-password" };
 describe("database config", () => {
     it("retrieves only the database secret and preserves verified TLS", async () => {
         const read = vi.fn(async () => "synthetic-db-password");
@@ -132,5 +132,20 @@ describe("product-specific delivery safeguards", () => {
         expect(r).toEqual({ smokePassed: true, component: "mcp" });
         expect(JSON.stringify(r)).not.toContain("synthetic-secret");
         expect(fetcher).toHaveBeenCalledTimes(3);
+    });
+});
+
+ describe("approved Phase 0 PostgreSQL target", () => {
+    it("renders API, migration and bootstrap with only the new database host while keeping compute in East US", async () => {
+        const c = await configuration();
+        expect(c.databaseServer).toBe("monotorr-cw-db-01");
+        const image = "monotorrdevacr6689.azurecr.io/connectwise-control-api@sha256:" + "a".repeat(64);
+        const { api, job } = computeResources(c, image, []);
+        const bootstrap = bootstrapResource(c, image);
+        for (const resource of [api, job, bootstrap]) {
+            expect(resource.location).toBe("eastus");
+            expect(resource.properties.template.containers[0].env).toContainEqual({ name: "CW_DB_HOST", value: "monotorr-cw-db-01.postgres.database.azure.com" });
+            expect(JSON.stringify(resource)).not.toContain("monotorr-cw-prod-pg");
+        }
     });
 });

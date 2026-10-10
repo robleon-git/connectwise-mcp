@@ -3,13 +3,14 @@ import { Pool } from "pg";
 import { migrate, loadMigrations } from "../database/migrationRunner.js";
 import { bootstrapDatabase, BOOTSTRAP_PENDING } from "../database/bootstrap.js";
 import { MIGRATIONS } from "../database/migrationManifest.js";
-describe.skipIf(process.env.CW_DATABASE_INTEGRATION !== "true")("real disposable PostgreSQL migrations", () => {
+describe.skipIf(process.env.CW_DATABASE_INTEGRATION !== "true")("real disposable PostgreSQL 18 migrations", () => {
     it("bootstraps a private-job-shaped non-superuser admin, migrates, and rejects runtime administration", async () => {
         if (process.env.CW_DB_HOST !== "127.0.0.1" || process.env.CW_DB_NAME !== "cw_delivery_test") throw new Error("disposable_database_required");
         const local = { host: "127.0.0.1", port: Number(process.env.CW_DB_PORT || "5432"), ssl: false as const };
         const owner = new Pool({ ...local, database: "cw_delivery_test", user: "postgres", password: process.env.CW_DB_LOCAL_PASSWORD });
         let admin: Pool | undefined, runtime: Pool | undefined, migrator: Pool | undefined;
         try {
+            expect((await owner.query("SHOW server_version")).rows[0].server_version).toMatch(/^18\./);
             await owner.query("CREATE ROLE cw_bootstrap_admin LOGIN CREATEROLE NOSUPERUSER PASSWORD 'synthetic-local-bootstrap-only'");
             await owner.query("CREATE DATABASE connectwise OWNER cw_bootstrap_admin");
             admin = new Pool({ ...local, database: "connectwise", user: "cw_bootstrap_admin", password: "synthetic-local-bootstrap-only" });
@@ -41,6 +42,7 @@ describe.skipIf(process.env.CW_DATABASE_INTEGRATION !== "true")("real disposable
             throw new Error("disposable_database_required");
         const pool = new Pool({ host: "127.0.0.1", port: Number(process.env.CW_DB_PORT || "5432"), user: process.env.CW_DB_USER || "postgres", password: process.env.CW_DB_LOCAL_PASSWORD, database: "cw_delivery_test", ssl: false });
         try {
+            expect((await pool.query("SHOW server_version")).rows[0].server_version).toMatch(/^18\./);
             await pool.query("DROP TABLE IF EXISTS public.schema_migrations");
             const migrations = await loadMigrations(MIGRATIONS, new URL("../../database/migrations/", import.meta.url));
             const results = await Promise.all([migrate(pool, migrations), migrate(pool, migrations)]);

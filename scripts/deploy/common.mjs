@@ -5,7 +5,7 @@ export const execute = promisify(execFile);
 export async function configuration(path = "deployment/azure/config.json") {
     const c = JSON.parse(await readFile(path, "utf8"));
     const expected = { subscriptionId: "08a97e42-1e1f-4f33-95dc-36af13337091", tenantId: "ad6bf531-194d-4880-8baa-013ab8eab0e8", resourceGroup: "monotorr-connectwise-prod-rg", sharedResourceGroup: "monotorr-dev-eastus-rg", environment: "monotorr-prod-aca-env", registry: "monotorrdevacr6689", vault: "cw-mcp-kv", controlApi: "connectwise-control-api", migrationJob: "connectwise-migrate", portal: "connectwise-portal", bootstrapJob: "connectwise-bootstrap", virtualNetwork: "monotorr-prod-vnet", privateEndpointSubnet: "snet-monotorr-private-endpoints", privateEndpoint: "pe-connectwise-prod-postgres", privateDnsZone: "privatelink.postgres.database.azure.com", database: "connectwise", location: "eastus", mcpResource: "https://api.monotorr.com/mcp" };
-    if (Object.keys(c).some(k => !Object.hasOwn(expected, k) && k !== "databaseServer") || Object.entries(expected).some(([k, v]) => c[k] !== v) || !/^monotorr-cw-prod-[a-z0-9-]{1,40}$/.test(c.databaseServer || ""))
+    if (Object.keys(c).some(k => !Object.hasOwn(expected, k) && k !== "databaseServer") || Object.entries(expected).some(([k, v]) => c[k] !== v) || c.databaseServer !== "monotorr-cw-db-01")
         throw new Error("invalid_delivery_target");
     return Object.freeze(c);
 }

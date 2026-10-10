@@ -6,7 +6,7 @@ vi.mock("@azure/keyvault-secrets", () => ({ logger: silent(), SecretClient: clas
 vi.mock("pg", () => ({ Pool: class { connect = f.connect; end = f.end; on = vi.fn(); } }));
 beforeEach(() => {
   vi.resetModules(); vi.clearAllMocks();
-  for (const [name, value] of Object.entries({ NODE_ENV: "production", CW_BOOTSTRAP_CONFIRM: "INITIALIZE_CONNECTWISE_DATABASE", CW_DB_HOST: "monotorr-cw-prod-pg.postgres.database.azure.com", CW_DB_NAME: "connectwise", CW_DB_USER: "cw_bootstrap_admin", CW_KEY_VAULT_URI: "https://cw-mcp-kv.vault.azure.net" })) vi.stubEnv(name, value);
+  for (const [name, value] of Object.entries({ NODE_ENV: "production", CW_BOOTSTRAP_CONFIRM: "INITIALIZE_CONNECTWISE_DATABASE", CW_DB_HOST: "monotorr-cw-db-01.postgres.database.azure.com", CW_DB_NAME: "connectwise", CW_DB_USER: "cw_bootstrap_admin", CW_KEY_VAULT_URI: "https://cw-mcp-kv.vault.azure.net" })) vi.stubEnv(name, value);
   f.get.mockImplementation(async (name: string) => ({ value: name === "cw-bootstrap-db-password" ? "SYNTHETIC_PRIVATE_DB_PASSWORD" : "__CW_DATABASE_BOOTSTRAP_PENDING__" }));
   f.set.mockResolvedValue({}); f.end.mockResolvedValue(undefined);
   f.query.mockImplementation(async (sql: string) => ({ rows: sql.includes("current_database") ? [{ database: "connectwise", username: "cw_bootstrap_admin" }] : sql.includes("pg_try_advisory_lock") ? [{ locked: true }] : [] }));

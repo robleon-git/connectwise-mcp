@@ -19,7 +19,7 @@ jobs:
       contents: read
     services:
       postgres:
-        image: postgres:17-alpine
+        image: postgres:18-alpine
         env:
           POSTGRES_DB: cw_delivery_test
           POSTGRES_PASSWORD: phase0-ci-disposable-only

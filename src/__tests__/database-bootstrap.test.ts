@@ -42,7 +42,7 @@ describe("bounded database bootstrap", () => {
     expect(g.query.mock.calls.map(c => c[0])).not.toContain("BEGIN");
   });
   it("rejects unsafe configuration and requires an explicit production operation", () => {
-    const env = { NODE_ENV: "production", CW_BOOTSTRAP_CONFIRM: "INITIALIZE_CONNECTWISE_DATABASE", CW_DB_HOST: "monotorr-cw-prod-pg.postgres.database.azure.com", CW_DB_NAME: "connectwise", CW_DB_USER: "cw_bootstrap_admin", CW_KEY_VAULT_URI: "https://cw-mcp-kv.vault.azure.net" };
+    const env = { NODE_ENV: "production", CW_BOOTSTRAP_CONFIRM: "INITIALIZE_CONNECTWISE_DATABASE", CW_DB_HOST: "monotorr-cw-db-01.postgres.database.azure.com", CW_DB_NAME: "connectwise", CW_DB_USER: "cw_bootstrap_admin", CW_KEY_VAULT_URI: "https://cw-mcp-kv.vault.azure.net" };
     expect(bootstrapSettings(env).user).toBe("cw_bootstrap_admin");
     for (const override of [{ CW_BOOTSTRAP_CONFIRM: "" }, { NODE_ENV: "development" }, { NODE_TLS_REJECT_UNAUTHORIZED: "0" }, { CW_DB_HOST: "monotorr-dev-db.postgres.database.azure.com" }, { CW_DB_USER: "cw_control" }]) expect(() => bootstrapSettings({ ...env, ...override })).toThrow();
   });

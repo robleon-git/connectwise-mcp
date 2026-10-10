@@ -46,7 +46,7 @@ export async function bootstrapDatabase(pool: Pick<Pool, "connect">, secrets: Bo
 
 export function bootstrapSettings(env: NodeJS.ProcessEnv) {
   if (env.NODE_ENV !== "production" || env.CW_BOOTSTRAP_CONFIRM !== "INITIALIZE_CONNECTWISE_DATABASE" ||
-      !/^monotorr-cw-prod-[a-z0-9-]{1,40}\.postgres\.database\.azure\.com$/.test(env.CW_DB_HOST || "") ||
+      env.CW_DB_HOST !== "monotorr-cw-db-01.postgres.database.azure.com" ||
       env.CW_DB_NAME !== "connectwise" || env.CW_DB_USER !== "cw_bootstrap_admin" ||
       env.CW_KEY_VAULT_URI !== "https://cw-mcp-kv.vault.azure.net" || env.NODE_TLS_REJECT_UNAUTHORIZED === "0")
     throw new Error("invalid_bootstrap_configuration");

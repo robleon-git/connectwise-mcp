@@ -9,7 +9,7 @@
   "controlApi": "connectwise-control-api",
   "migrationJob": "connectwise-migrate",
   "portal": "connectwise-portal",
-  "databaseServer": "monotorr-cw-prod-pg",
+  "databaseServer": "monotorr-cw-db-01",
   "database": "connectwise",
   "location": "eastus",
   "mcpResource": "https://api.monotorr.com/mcp",
