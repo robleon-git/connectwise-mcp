@@ -376,7 +376,7 @@ Use:
 
 `source = comp`
 
-Admin should eventually be able to grant complimentary entitlement:
+Complimentary entitlement provisioning remains part of the commercial lifecycle. Its restricted operator mechanism must be explicitly decided separately; the Basic Internal Admin Console cannot grant, revoke or edit entitlements. Any later console management capability requires separate approval. Provisioning must support:
 
 - indefinitely
 - optionally until a selected expiration date
@@ -806,31 +806,32 @@ Exact copy and timing are a separate product/content task.
 
 ---
 
-# 26. Admin Console
+# 26. Basic Internal Admin Console — required for V1 launch
 
-Admin functionality exists to support customers, not operate their ConnectWise environment.
+The **November 17, 2026** launch requires a small internal operations console for onboarding, connection health, MCP usage/errors and Readiness Assessment usage. It is visibility only, not a customer dashboard, analytics product, billing console or ConnectWise administration interface. This approved scope supersedes the earlier broader support-console plan.
 
-Admin should be able to:
+Reuse the existing portal and control API with a distinct login-protected admin route area, one customer table and an optional expandable row/small detail screen. Do not introduce another dashboard platform, reporting stack or analytics warehouse.
 
-- find an account
-- see account status
-- see entitlement source/status
-- see onboarding state
-- see connection status
-- see last successful connection test
-- see sanitized error state
-- grant/revoke complimentary entitlement
-- assist with billing/support issues
-- trigger or recommend safe diagnostics where appropriate
+Customer overview shows:
 
-Admin must never be able to view:
+- customer/account name (a tenant label does not introduce a provider hierarchy)
+- onboarding and ConnectWise connection state
+- last successful connection and last MCP activity
+- MCP tool calls in the last seven days
+- failed MCP calls and sanitized error categories
+- Readiness Assessment execution count
 
-- customer private API key
-- raw Authorization headers
-- secret values
-- sensitive customer API responses merely for convenience
+Customer detail shows stored connection health, recently used tools, per-tool usage counts, recent sanitized error categories and Readiness Assessment execution history. Missing/stale observations must be labeled honestly; opening the console never triggers a ConnectWise read or tool execution.
 
-Avoid impersonation functionality in V1 unless a specific support need proves it necessary.
+Use only narrow server-side operational-summary APIs: customer list, customer operational detail and recent sanitized telemetry summaries. Select targets only from authorized customer records and bounded filters; a customer ID alone never authorizes access. Use explicit response allowlists, pagination and bounded time windows. No arbitrary record/table lookup, database browser, SQL, log explorer, credential retrieval, impersonation or admin MCP execution API.
+
+Section 37 remains mandatory: a separately designated internal admin identity and server-side admin authorization, distinct from customer sessions/account membership. Customer sessions are denied on admin routes; admin-only identities are not automatically provisioned customer accounts, entitlements or MCP access. The product owner's ordinary identity receives no special privileges. No email/domain/ownership exception.
+
+Routine server-side telemetry is independent of console activity. Store only trusted internal account context (nullable for unattributed authentication failures), allowlisted event/tool identifiers, server timestamps, bounded duration and sanitized categories. Never store conversation content, ticket bodies/notes, agreement financial payloads, invoice payloads, raw ConnectWise responses, API keys, OAuth tokens, cookies or Authorization headers. No new path to customer operational data or secret storage is permitted.
+
+V1 console exclusions: billing/subscription administration, entitlement editing or comp grant/revoke, customer impersonation, customer-facing/advanced analytics, alerts/notifications, full audit-log exploration, support ticketing, tool execution, remediation/write actions, ConnectWise operational browsing, arbitrary SQL/database access and a large dashboard framework. Customer Stripe functionality and the four entitlement sources remain in V1; they do not create console management permissions.
+
+Acceptance requires secure explicit admin login, denial for customer identities, an accurate customer/connection table, per-customer last MCP activity and per-account/tool counts, sanitized failures, measurable readiness executions, payload/credential-free telemetry, automated account/admin boundary tests and a deployed smoke on existing lightweight infrastructure. Detailed telemetry retention, delivery slices and the launch checklist live in [the implementation plan](V1_IMPLEMENTATION_PLAN.md).
 
 ---
 
@@ -865,9 +866,13 @@ Examples:
 - credentials replaced
 - connection disconnected
 - connection reconnected
-- admin entitlement change
+- explicitly authorized entitlement lifecycle change (not an admin-console action)
 
-Audit records must not contain secrets.
+Audit records must not contain secrets. The Basic Internal Admin Console is not a full audit-log explorer.
+
+Launch also requires account-scoped operational telemetry for MCP execution success/failure, tool ID, server timestamp, bounded duration, authentication/connection failure category and Readiness Assessment execution. Account IDs come only from verified server context; failed authentication without a trusted mapping remains unattributed. Telemetry never causes credential loading or ConnectWise requests on denial.
+
+Use the existing product PostgreSQL/control plane with bounded event storage and daily usage aggregates. V1 policy: retain detailed operational events for 30 days and daily account/tool/outcome counts for 90 days; expire both automatically with bounded maintenance. Aggregates contain no payloads or raw error text. Account deletion must address both stores under the approved lifecycle policy. This does not change infrastructure backup retention or create a customer analytics feature. See Phase 6 in the implementation plan for field, counting and privacy rules.
 
 ---
 
@@ -984,7 +989,11 @@ Stores Stripe linkage/status when relevant.
 
 ## audit_events
 
-Stores sanitized account/application events.
+Stores sanitized account/application events; no full audit-log exploration in the V1 console.
+
+## operational_events / daily operational counts (planned)
+
+Minimal account-scoped metadata and bounded per-day account/tool/outcome aggregates for required internal operations. Use the existing product database, not ConnectWise payload storage or an analytics warehouse. These are conceptual planning records, not migrations or claims of implementation.
 
 Additional tables should require a demonstrated V1 need.
 
@@ -1123,20 +1132,21 @@ Acceptance:
 
 Each entitlement path correctly grants/revokes MCP access without changing identity or ConnectWise configuration.
 
-## Phase 6 — Admin/support
+## Phase 6 — Basic Internal Admin Console
 
-Implement:
+Implement only:
 
-- account search
-- entitlement visibility
-- connection health
-- onboarding visibility
-- sanitized diagnostics
-- complimentary access control
+- separate internal admin authentication and server-side authorization
+- tenant-aware operational telemetry and bounded retention/aggregates
+- customer overview/detail APIs and lightweight internal UI
+- stored connection/onboarding state, sanitized failures and per-account/tool counts
+- Readiness Assessment execution counts/history
+
+Account-aware MCP supplies trusted per-customer execution events; the readiness slice supplies an observable assessment execution event. Do not delay current customer slices while the separate admin identity is still undesignated.
 
 Acceptance:
 
-Admin can support a customer without seeing ConnectWise secrets.
+An explicitly authorized internal administrator can see only permitted operational metadata. Customer sessions are denied, the normal product owner has zero admin privilege, and admin-only identities receive no customer MCP access. No billing/entitlement editing, complimentary-access controls, impersonation or tool execution is included.
 
 ## Phase 7 — Launch hardening
 
@@ -1173,16 +1183,18 @@ V1 is complete when a new external customer can:
 11. Manage their subscription/access.
 12. Return later and continue using the product without operator assistance.
 
-And when Monotorr administrators can:
+And when the required Basic Internal Admin Console lets a separately authorized internal administrator:
 
-1. Locate the customer account.
-2. See entitlement state.
-3. See onboarding state.
-4. See connection health.
-5. View sanitized diagnostics.
-6. Grant complimentary access.
-7. Assist with billing/setup without accessing customer private credentials.
+1. Securely log in without customer-derived privileges.
+2. View registered customers, onboarding and stored connection health/last success.
+3. See last MCP activity and seven-day per-customer/tool counts.
+4. View only sanitized connection/tool error categories.
+5. See Readiness Assessment counts/history.
+6. Operate within tested customer/admin isolation and retention/privacy boundaries.
 
+Customer identities cannot access admin routes. The console cannot retrieve keys, inspect operational payloads, impersonate a customer, execute tools, administer subscriptions or edit entitlements. Complimentary entitlement remains a commercial capability; its separate provisioning decision does not expand console scope.
+
+**Basic Internal Admin Console — REQUIRED FOR LAUNCH (November 17, 2026).** The canonical checklist is in [the implementation plan](V1_IMPLEMENTATION_PLAN.md#november-17-2026-launch-checklist).
 ---
 
 # 36. Architecture Decision Rule
@@ -1239,7 +1251,7 @@ rob@monotorr.com
 separate-admin-identity
 → super-admin
 → admin console only
-→ support/entitlement/diagnostic functions
+→ operational visibility / sanitized diagnostic summaries only
 ```
 
 ---
