@@ -62,6 +62,14 @@ describe("CwManageClient TLS dispatcher (no process.env mutation)", () => {
     expect(headers.has("memberId")).toBe(false);
   });
 
+  it("discards potentially useful error bodies without parsing or exposing them", async () => {
+    const response = new Response("synthetic-secret ConnectWise error details", { status: 401 });
+    const json = vi.spyOn(response, "json"), text = vi.spyOn(response, "text");
+    vi.stubGlobal("fetch", vi.fn(async () => response));
+    await expect(new CwManageClient(baseConfig).get("/system/info")).rejects.toThrow("ConnectWise API returned 401.");
+    expect(json).not.toHaveBeenCalled(); expect(text).not.toHaveBeenCalled();
+  });
+
   it.each([undefined, "", "   "])("omits the clientId header entirely for absent/empty clientId (%s)", async clientId => {
     const fetchMock = vi.fn().mockResolvedValue(fakeResponse({ ok: true }));
     vi.stubGlobal("fetch", fetchMock);
