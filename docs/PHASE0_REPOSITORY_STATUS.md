@@ -1,6 +1,10 @@
 # Phase 0 repository review status
 
-Prepared 2026-10-08. Phase 0 repository foundation implemented; no Phase 1 product functionality. No commit, push, workflow dispatch, ACR push, Azure deployment/resource creation/configuration change, Descope change, DNS/routing change, or customer credential change occurred.
+Current status: **Phase 0 live acceptance PASS**, completed 2026-10-10. This approved closeout includes the validated conditional-activation fix and final deployment/runbook/status/cost evidence. No Phase 1 functionality or deployment is included.
+
+## Historical repository preparation — 2026-10-08
+
+The preparation and validation details below describe the original repository checkpoint; current live evidence and approved deviations are recorded in [live status](PHASE0_LIVE_DEPLOYMENT_STATUS.md). No live Azure changes occurred during that original preparation.
 
 ## Implemented
 

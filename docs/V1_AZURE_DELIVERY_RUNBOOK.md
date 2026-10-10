@@ -1,6 +1,6 @@
 # V1 Phase 0 Azure Delivery Runbook
 
-Status: reviewed checkpoint is committed/pushed and CI passed; Phase 0 resource creation/deployment is owner-authorized; initial group/identity/federation/portal shell created, database secure-entry step pending. The approved dedicated PostgreSQL server is `monotorr-cw-db-01` in North Central US. No provisioning/retry is authorized by this repository update. Phase 0 is not complete until authorized live deployment/smoke/rollback gates pass. See [live preflight status](PHASE0_LIVE_DEPLOYMENT_STATUS.md).
+Status: **Phase 0 live acceptance PASS (2026-10-10)**; this runbook records the completed foundation and repeatable owner-approved delivery process. Database `monotorr-cw-db-01` is PostgreSQL 18/B1ms in North Central US, private-only. Bootstrap cleanup, migrations, API promotion/rollback, portal smoke, 39-tool MCP regression, owner dogfood and alert delivery passed. No Phase 1 work or new Azure/deployment operation is authorized by repository closeout. See [live status](PHASE0_LIVE_DEPLOYMENT_STATUS.md).
 
 Authority: [V1 architecture](V1_PRODUCT_ARCHITECTURE.md), [implementation plan](V1_IMPLEMENTATION_PLAN.md). Approved delivery decisions supersede the earlier proposal to reuse Monotorr's PostgreSQL server or change the existing MCP revision mode/probes.
 
@@ -41,7 +41,7 @@ Run from the canonical repository only. These are future actions, NOT instructio
 ```sh
 az group create --name monotorr-connectwise-prod-rg --location eastus --output none
 az identity create --name cw-deploy-identity --resource-group monotorr-connectwise-prod-rg --location eastus --output none
-az identity federated-credential create --name github-connectwise-production --identity-name cw-deploy-identity --resource-group monotorr-connectwise-prod-rg --issuer https://token.actions.githubusercontent.com --subject repo:robleon-git/connectwise-mcp:environment:connectwise-production --audiences api://AzureADTokenExchange --output none
+az identity federated-credential create --name github-connectwise-production --identity-name cw-deploy-identity --resource-group monotorr-connectwise-prod-rg --issuer https://token.actions.githubusercontent.com --subject repo:robleon-git@202705822/connectwise-mcp@1404568890:environment:connectwise-production --audiences api://AzureADTokenExchange --output none
 az staticwebapp create --name connectwise-portal --resource-group monotorr-connectwise-prod-rg --location eastus2 --sku Standard --output none
 ```
 
@@ -105,6 +105,8 @@ The delivery job permits only `workflow_dispatch` in `robleon-git/connectwise-mc
 Codex approval is an operator process gate, not a GitHub-verifiable approval claim. The same owner can still manually dispatch through GitHub UI/CLI; doing so must follow this approval process. No collaborator permissions, additional operators or authentication protocol are introduced. Future changes to production operators require explicit review. Historical GitHub-review records in the live status document describe the former process, not current requirements.
 
 ## Release process and environment contract
+
+Promotion/rollback reads the selected revision's active state. Already-active revisions skip activation; inactive revisions must activate successfully before traffic changes. Unknown active state fails closed. Traffic rejection aborts; ambiguous timeouts require read-only confirmation of actual traffic before any further action. The live acceptance exercise promoted, rolled back and restored the existing candidate without changing either image, revision mode or database state.
 
 Nonsecret resource targets: `deployment/azure/config.json` (allowlisted by the scripts). Azure-generated API/SWA hostnames are discovered from the named resources. Permanent names must be chosen before Phase 1 session/callback settings. No frontend API key or customer secret is configured. `CW_CUSTOMER_FEATURES_ENABLED` must be false; attempting to enable it fails API startup. Unknown/product/MCP routes are 404 even if called directly.
 
@@ -249,7 +251,7 @@ The local baseline command runs with the operator's Azure login. Only if baselin
 
 ## Approved North Central US database placement — repository baseline, 2026-10-10
 
-This section supersedes any earlier East US database proposal. The owner approved North Central US and server name `monotorr-cw-db-01`, retaining Burstable Standard_B1ms as the intentional initial V1 size, accepting the approximate $23.39/month fixed database infrastructure cost, Burstable limitations, and cross-region latency/usage-based bandwidth tradeoffs. Do not request an East US exception or use the shared Monotorr PostgreSQL server. Initial group/deployment identity/federation/portal shell have been created under final owner approval; database/application deployment is pending.
+This section supersedes any earlier East US database proposal. The owner approved North Central US and server name `monotorr-cw-db-01`, retaining Burstable Standard_B1ms as the intentional initial V1 size, accepting the approximate $23.39/month fixed database infrastructure cost, Burstable limitations, and cross-region latency/usage-based bandwidth tradeoffs. Do not request an East US exception or use the shared Monotorr PostgreSQL server. Initial group/deployment identity/federation/portal shell have been created under final owner approval; database/application deployment and live acceptance are complete; see the live status record.
 
 ### Exact resource inventory and estimated recurring costs
 
@@ -267,7 +269,7 @@ All new resources use `monotorr-connectwise-prod-rg` unless otherwise stated. US
 | `connectwise-migrate` | New group | **East US** | Manual ACA job; 0.5 vCPU/1 GiB, retry 0, timeout 180 s | Execution-based; approx. $0.0027 for 180 s compute, plus logs | Separate system identity reads only `cw-migration-db-password`; no role creation/admin privilege |
 | `connectwise-bootstrap` | New group; temporary | **East US** | Explicit operator-only ACA job; same sizing/bounds; deleted after use | Execution-based, same compute rate; no idle service | Distinct system identity with three temporary secret-scoped grants; cleanup removes grants, disables bootstrap secret, deletes job |
 | `cw-bootstrap-db-password`, `cw-control-db-password`, `cw-migration-db-password` | Existing `cw-mcp-kv`, shared group | East US | Three new product DB secrets | Existing vault transaction charges; no new vault | Bootstrap administrator secret entered through secure portal; service passwords generated in job memory; no customer key changes |
-| `connectwise-portal` | New group | **East US 2 (explicitly approved)** | Previously approved Standard SWA; globally distributed assets; no managed Functions | $9/month if Standard SWA retained, plus excess bandwidth | No customer keys or DB access; dedicated SWA transport-token role; placement explicitly approved; shell created, publication pending |
+| `connectwise-portal` | New group | **East US 2 (explicitly approved)** | Previously approved Standard SWA; globally distributed assets; no managed Functions | $9/month if Standard SWA retained, plus excess bandwidth | No customer keys or DB access; dedicated SWA transport-token role; placement explicitly approved; published shell and deployed smoke passed |
 
 Subscription metadata was checked read-only with:
 
@@ -311,7 +313,7 @@ Database cross-region placement does not change customer MCP auth, Descope, Conn
 **Final owner approval received for the documented Phase 0 resource creation/deployment sequence, including East US 2 portal placement. Preserve all hard constraints and stop conditions. Secure database/password Portal entry remains a manual operator step; do not bypass it with secrets in CLI/files.**
 
 
-## B1ms launch operations and monitoring — planned, not provisioned
+## B1ms launch operations and monitoring — deployed native alerts
 
 Authority: owner-approved initial V1 database size. The database holds control-plane users/accounts/memberships/external identities/entitlements/connection metadata/onboarding/Stripe references/audit events only. Do not persist ConnectWise operational ticket/company/time/invoice/project datasets. The 39 MCP tools continue to query ConnectWise directly. No application, tenant/data architecture or credential-resolution change is required by this size decision.
 
@@ -352,7 +354,7 @@ Sources: [Azure PostgreSQL metric definitions](https://learn.microsoft.com/en-us
 
 ### Native metric-alert cost verification before provisioning
 
-Verified 2026-10-09: all six planned rules use native PostgreSQL platform metrics. No PostgreSQL diagnostic settings, Log Analytics ingestion, SQL/query-text logs, Data Collection Rule, Application Insights or new workspace is required to evaluate these alerts. The current public retail meter `Alerts Metric Monitored` is $0.10/time-series/month after a first-ten free allowance; budget **up to $0.60/month for six single-resource/single-series static rules**, depending on allowance already used. Do not split dimensions into additional time series. Action-group notification charges, if any, are separate; use the approved simple operator notification path without auto-remediation. No alert or logging resource has been created yet. Fixed PG/endpoint remains $23.39/month; adding these six rules gives approximately **$23.99/month before other usage costs** without free allowance. [Azure Monitor cost model](https://learn.microsoft.com/en-us/azure/azure-monitor/fundamentals/cost-usage).
+Verified 2026-10-09: all six planned rules use native PostgreSQL platform metrics. No PostgreSQL diagnostic settings, Log Analytics ingestion, SQL/query-text logs, Data Collection Rule, Application Insights or new workspace is required to evaluate these alerts. The current public retail meter `Alerts Metric Monitored` is $0.10/time-series/month after a first-ten free allowance; budget **up to $0.60/month for six single-resource/single-series static rules**, depending on allowance already used. Do not split dimensions into additional time series. Action-group notification charges, if any, are separate; use the approved simple operator notification path without auto-remediation. The six approved native metric alerts and operator action group are deployed, with owner-confirmed successful test/email receipt; no PostgreSQL diagnostic-log ingestion was added. Fixed PG/endpoint remains $23.39/month; adding these six rules gives approximately **$23.99/month before other usage costs** without free allowance. [Azure Monitor cost model](https://learn.microsoft.com/en-us/azure/azure-monitor/fundamentals/cost-usage).
 
 
 ## Approved PostgreSQL 18 deployment baseline

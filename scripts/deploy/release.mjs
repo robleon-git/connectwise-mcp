@@ -96,7 +96,9 @@ export async function release(action) {
     const revision = action === "promote" ? manifest.revision : manifest.previousRevision;
     if (!new RegExp(`^${c.controlApi}--[a-z0-9-]+$`).test(revision || "") || (action === "promote" && !manifest.candidateSmokePassed))
         throw new Error("invalid_release_manifest");
-    const selected = JSON.parse(await az(["containerapp", "revision", "show", ...target, "--revision", revision, "--query", "{image:properties.template.containers[0].image,health:properties.healthState}", "-o", "json"]));
+    const selected = JSON.parse(await az(["containerapp", "revision", "show", ...target, "--revision", revision, "--query", "{image:properties.template.containers[0].image,health:properties.healthState,active:properties.active}", "-o", "json"]));
+    if (typeof selected.active !== "boolean")
+        throw new Error("revision_active_state_unknown");
     if (selected.image !== (action === "promote" ? manifest.image : manifest.previousImage))
         throw new Error("revision_image_mismatch");
     if (action === "promote") {
@@ -111,7 +113,8 @@ export async function release(action) {
         if (needsDogfood(changed))
             throw new Error("mcp_affecting_release_requires_separate_review_and_owner_dogfood");
     }
-    await az(["containerapp", "revision", "activate", ...target, "--revision", revision, "-o", "none"]);
+    if (!selected.active)
+        await az(["containerapp", "revision", "activate", ...target, "--revision", revision, "-o", "none"]);
     await az(["containerapp", "ingress", "traffic", "set", ...target, "--revision-weight", `${revision}=100`, "-o", "none"]);
     await smoke(`https://${current.fqdn}`, "control-api");
     await smoke("https://api.monotorr.com", "mcp");
