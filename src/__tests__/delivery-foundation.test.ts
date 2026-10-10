@@ -162,3 +162,22 @@ describe("release evidence publication", () => {
         expect(evidence).not.toContain(".delivery/*.json");
     });
 });
+
+
+describe("Phase 0 portal authentication remains unavailable", () => {
+    it.each(["aad", "github"])("explicitly blocks the built-in %s login route", async provider => {
+        const config = JSON.parse(await readFile(new URL("../../portal/public/staticwebapp.config.json", import.meta.url), "utf8"));
+        expect(config.routes).toContainEqual({ route: `/.auth/login/${provider}`, statusCode: 404 });
+        expect(config.navigationFallback.exclude).toContain("/.auth/*");
+    });
+    it.each(["aad", "github"])("rejects a live %s login redirect instead of accepting incomplete authentication", async provider => {
+        const fetcher = vi.fn(async (input: URL, options: RequestInit) => {
+            expect(options.redirect).toBe("error");
+            if (input.pathname === "/") return new Response('<div id="root"></div><script src="/assets/shell.js"></script>');
+            if (input.pathname === `/.auth/login/${provider}`)
+                return new Response(null, { status: 302, headers: { Location: "https://example.invalid/login" } });
+            return new Response(null, { status: 404 });
+        });
+        await expect(smoke("https://black-bush-04c7a8b0f.5.azurestaticapps.net", "portal", fetcher)).rejects.toThrow("smoke_failed");
+    });
+});
