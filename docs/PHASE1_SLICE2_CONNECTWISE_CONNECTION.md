@@ -95,7 +95,7 @@ az account set --subscription 08a97e42-1e1f-4f33-95dc-36af13337091
 az keyvault create --name monotorr-cw-creds-kv \
   --resource-group monotorr-connectwise-prod-rg --location eastus --sku standard \
   --enable-rbac-authorization true --public-network-access Disabled \
-  --network-acls-default-action Deny --bypass None \
+  --default-action Deny --bypass None \
   --retention-days 90 --enable-purge-protection true --output none
 
 az network private-endpoint create --name pe-monotorr-cw-creds-kv \
@@ -250,3 +250,5 @@ Before the first live Azure mutation, obtain and record a fresh ordinary-owner p
 ### Approved candidate-setting validation
 
 Candidate-only setting regression tests passed: the setup flag appears only on the new control API update after migration, never on promotion/rollback/MCP actions. Final checkpoint: **73 focused delivery tests; 29 files / 599 full-suite tests passed**, with PostgreSQL 18 integration. Builds, lint, ticket-card output, both audits (zero vulnerabilities), diff check and unchanged 26-module MCP comparison passed. Pre-change live metadata/DNS/inherited-RBAC checks passed; vault name is available, no existing private vault DNS zone was found, and the approved control system principal is unchanged. Fresh manual owner dogfood confirmation remains a hard gate before the first Azure mutation.
+
+Installed Azure CLI preflight confirmed the vault network flag is `--default-action Deny` (the previously written longer spelling is not supported). This command spelling correction preserves the approved Deny policy and changes no resource design.
