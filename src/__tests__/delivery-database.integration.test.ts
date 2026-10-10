@@ -32,7 +32,16 @@ describe.skipIf(process.env.CW_DATABASE_INTEGRATION !== "true")("real disposable
             await expect(migrator.query("CREATE ROLE forbidden_role")).rejects.toThrow();
         } finally {
             await Promise.all([admin?.end(), runtime?.end(), migrator?.end()]);
-            await owner.query("DROP DATABASE IF EXISTS connectwise WITH (FORCE)");
+            // pool.end() can finish before PostgreSQL has observed every socket close.
+            // Wait for backend disconnects; FORCE can emit a late uncaught pool error in CI.
+            let remaining = 1;
+            for (let attempt = 0; attempt < 100; attempt++) {
+                remaining = Number((await owner.query("SELECT count(*) AS count FROM pg_stat_activity WHERE datname = 'connectwise'")).rows[0].count);
+                if (remaining === 0) break;
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
+            expect(remaining).toBe(0);
+            await owner.query("DROP DATABASE IF EXISTS connectwise");
             await owner.query("DROP ROLE IF EXISTS cw_control,cw_migrator,cw_bootstrap_admin");
             await owner.end();
         }
