@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 const workflow = await readFile(new URL("../../.github/workflows/deploy.yml", import.meta.url), "utf8");
 const delivery = workflow.split("  deliver:\n")[1];
-const condition = delivery.match(/    if: >-\n([\s\S]*?)    needs: verify/)!;
+const condition = delivery.match(/ {4}if: >-\n([\s\S]*?) {4}needs: verify/)!;
 const terms = condition[1].trim().split(/\s*&&\s*/).map(term => {
     const parsed = term.match(/^github\.([a-z_]+) == '([^']+)'$/);
     if (!parsed) throw new Error("unexpected_delivery_guard");
@@ -31,7 +31,7 @@ describe("Codex-approved manual production operator boundary", () => {
     it("retains manual-only trigger, environment and unprivileged verification", () => {
         const triggers = workflow.split("on:\n")[1].split("permissions:\n")[0];
         expect(triggers).toContain("  workflow_dispatch:");
-        expect(triggers).not.toMatch(/^  (push|pull_request|schedule|workflow_run|repository_dispatch):/m);
+        expect(triggers).not.toMatch(/^ {2}(push|pull_request|schedule|workflow_run|repository_dispatch):/m);
         expect(delivery).toContain("    needs: verify");
         expect(delivery).toContain("    environment: connectwise-production");
         expect(delivery).toContain("      id-token: write");
