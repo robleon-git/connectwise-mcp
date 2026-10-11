@@ -1,0 +1,10 @@
+{
+  "Name": "ConnectWise temporary MCP environment join",
+  "IsCustom": true,
+  "Description": "Temporary candidate creation prerequisite. Assign only at the exact monotorr-prod-aca-env resource; remove the assignment on success or failure.",
+  "Actions": ["Microsoft.App/managedEnvironments/join/action"],
+  "NotActions": [],
+  "DataActions": [],
+  "NotDataActions": [],
+  "AssignableScopes": ["/subscriptions/08a97e42-1e1f-4f33-95dc-36af13337091/resourceGroups/monotorr-dev-eastus-rg"]
+}

@@ -228,3 +228,31 @@ Unknown/unlinked and invalid entitlement: 0/0. Unconfigured account: 0/0. Malfor
 **TEMPORARY PRE-LAUNCH EMERGENCY RECOVERY ONLY.** The retained old pilot image serves only its prior approved identity, excludes newly linked SaaS customers, and does not enforce the new account/entitlement path. Newly linked customers remain stored/linked but receive the old allowlist denial; the prior pilot identity can use its prior pilot connection. This is not a normal post-launch rollback target. Preserve pilot image/secrets for the explicitly approved recovery window. Before general customer availability, retain and validate a known-good account-aware rollback image/revision/path so recovery cannot reintroduce the pilot authorization model.
 
 Repository prerequisite validation does not authorize bootstrap, RBAC, Descope changes, migration, candidate creation, control/portal deployment or production cutover. No live acceptance PASS is claimed here.
+
+## Candidate creation guardrails — repository checkpoint
+
+The candidate PUT remains pinned to `Microsoft.App/containerApps` API `2024-03-01`. Its combined identity enum is exactly `SystemAssigned,UserAssigned`: the system identity and existing `connectwise-mcp-pull-id` remain unchanged. Offline regression tests validate the complete generated resource against the official Azure schema under `src/__tests__/fixtures/azure-containerapps-2024-03-01/`. `provenance.json` records source URLs and SHA-256 hashes of the unmodified schema files. The test adapts draft-04 identifiers for the existing AJV validator; validation rules and enum values are preserved. No dependency or runtime changes are required.
+
+Candidate creation also requires `Microsoft.App/managedEnvironments/join/action`. The source definition is `deployment/azure/mcp-environment-join-role.json`, containing that action alone and no data-plane permissions. Its resource-group `AssignableScopes` permits defining the custom role; it does **not** authorize a resource-group assignment. The sole intended temporary assignment is to GitHub OIDC principal `9c8fd37b-b308-4a9d-beef-018459764029` at this exact environment resource:
+
+```text
+/subscriptions/08a97e42-1e1f-4f33-95dc-36af13337091/resourceGroups/monotorr-dev-eastus-rg/providers/Microsoft.App/managedEnvironments/monotorr-prod-aca-env
+```
+
+Future operator-approved actions, not performed by repository validation:
+
+```sh
+az role definition create --role-definition @deployment/azure/mcp-environment-join-role.json --output none
+az role assignment create \
+  --assignee-object-id 9c8fd37b-b308-4a9d-beef-018459764029 \
+  --assignee-principal-type ServicePrincipal \
+  --role "ConnectWise temporary MCP environment join" \
+  --scope /subscriptions/08a97e42-1e1f-4f33-95dc-36af13337091/resourceGroups/monotorr-dev-eastus-rg/providers/Microsoft.App/managedEnvironments/monotorr-prod-aca-env \
+  --query id --output tsv
+```
+
+Capture the returned assignment ID. Remove that **exact assignment** using `az role assignment delete --ids <captured-assignment-id> --output none` immediately after the approved candidate operation, on success or failure; verify absence before any next step. The custom role may remain defined but unassigned. This supplements the separately reviewed temporary candidate-creation permission and does not grant environment write/delete, networking, vault/database access, or RBAC administration. Neither assignment nor candidate retry is authorized by this source checkpoint.
+
+MCP delivery failures now emit only `mcpReleaseSucceeded:false`, an allowlisted stage and an allowlisted category. Candidate stages distinguish payload validation/writing, existence check, ARM PUT and evidence persistence; baseline checks remain fail closed. Known structured Azure error codes map to authorization, invalid-payload, resource-conflict or referenced-resource categories. Unknown, unstructured or ambiguous errors become `unknown`. Raw command stderr/stdout, error messages, response bodies, headers and command/environment values are never emitted. The shared control-only Azure helper is unchanged. All failures retain a nonzero CLI exit; no automatic retry or guard bypass is introduced.
+
+After this checkpoint, a **new separately approved immutable build** must produce same-SHA release evidence before any candidate retry. Existing image provenance must not be relabeled. The next live permission request must include the exact temporary environment assignment and mandatory cleanup above. Existing MCP runtime/image/configuration/routing/revision/traffic/probes, Descope, customer data and identity bindings remain outside this correction.

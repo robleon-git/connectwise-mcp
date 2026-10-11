@@ -10,6 +10,8 @@ import {candidateDiagnostic} from "../../scripts/deploy/diagnose-mcp-candidate.m
 import {diagnosticMcpTarget} from "../../scripts/validate-mcp-user-claim.mjs";
 // @ts-expect-error Operator reference has no declarations.
 import {EXPECTED_READ_TOOLS} from "../../scripts/read-only-tool-inventory.mjs";
+// @ts-expect-error Delivery script has no declarations.
+import { releaseDiagnostic, releaseFailure } from "../../scripts/deploy/mcp-release-diagnostics.mjs";
 const sha="a".repeat(40),oldSha="b".repeat(40),digest="c".repeat(64),oldDigest="d".repeat(64);
 const c={subscriptionId:"08a97e42-1e1f-4f33-95dc-36af13337091",sharedResourceGroup:"monotorr-dev-eastus-rg",resourceGroup:"monotorr-connectwise-prod-rg",registry:"monotorrdevacr6689",databaseServer:"monotorr-cw-db-01",mcpResource:"https://api.monotorr.com/mcp",controlApi:"connectwise-control-api"};
 const image=`${c.registry}.azurecr.io/connectwise-mcp@sha256:${digest}`,oldImage=`${c.registry}.azurecr.io/connectwise-mcp@sha256:${oldDigest}`,controlImage=`${c.registry}.azurecr.io/connectwise-control-api@sha256:${digest}`;
@@ -201,7 +203,7 @@ describe("delivery input/provenance restrictions",()=>{
  it.each(["0.0.0.0/0","10.0.0.1/32","127.0.0.1/32","8.8.8.8/24","999.1.1.1/32","8.8.8.8/32;evil"])("rejects operator range %s",value=>expect(()=>operatorCidr(value)).toThrow());
  it("requires immutable correct-repository image and canonical candidate audience",()=>{
   expect(mcpImage(c,image)).toBe(image);expect(()=>mcpImage(c,image.replace("@sha256:",":"))).toThrow();
-  const resource=candidateResource(c,image,"8.8.8.8/32");expect(resource.properties.configuration.activeRevisionsMode).toBe("Single");expect(resource.properties.template.containers[0].env).toContainEqual({name:"MCP_RESOURCE_URI",value:c.mcpResource});expect(resource.identity.type).toBe("SystemAssigned, UserAssigned");
+  const resource=candidateResource(c,image,"8.8.8.8/32");expect(resource.properties.configuration.activeRevisionsMode).toBe("Single");expect(resource.properties.template.containers[0].env).toContainEqual({name:"MCP_RESOURCE_URI",value:c.mcpResource});expect(resource.identity.type).toBe("SystemAssigned,UserAssigned");
  });
  it("requires successful same-source/repository/workflow/actor artifact provenance",async()=>{
   const valid={head_sha:sha,event:"workflow_dispatch",status:"completed",conclusion:"success",path:".github/workflows/deploy-mcp.yml",head_branch:"phase1-hardening",repository:{full_name:"robleon-git/connectwise-mcp"},actor:{login:"robleon-git"},triggering_actor:{login:"robleon-git"}};
@@ -224,5 +226,35 @@ describe("delivery input/provenance restrictions",()=>{
   const run=vi.fn(async(_options:unknown)=>({resourceTokenVerified:true,approvedIdMatchPaths:["/sub"],mcpInitializeSucceeded:true,toolsListSucceeded:true,toolNames:EXPECTED_READ_TOOLS})),output=vi.fn();
   expect(await candidateDiagnostic([url],run,output)).toBe(0);expect(run.mock.calls[0][0]).toMatchObject({mcpUrl:url,freshLogin:true});expect(JSON.parse(output.mock.calls[0][0])).toMatchObject({toolCount:39,expectedReadToolSetMatched:true});
   run.mockClear();expect(await candidateDiagnostic(["https://evil.example/mcp"],run,output)).toBe(1);expect(run).not.toHaveBeenCalled();
+ });
+});
+
+describe("sanitized MCP candidate failure stages",()=>{
+ async function diagnosticFailure(overrides:Record<string,unknown>={},extra:Record<string,unknown>={}) {
+  try {await mcpRelease("candidate",input("candidate",{operatorCidr:"8.8.8.8/32",...extra}),{...dependencies(),...overrides});throw new Error("expected_failure");}
+  catch(error){return releaseDiagnostic(error);}
+ }
+ it("reports baseline drift before any candidate operation",async()=>{
+  state.baseline.configFingerprint="e".repeat(64);
+  expect(await diagnosticFailure()).toEqual({mcpReleaseSucceeded:false,stage:"baseline",category:"baseline_changed"});expect(mutations()).toHaveLength(0);
+ });
+ it("reports invalid payload without a PUT",async()=>{
+  expect(await diagnosticFailure({}, {operatorCidr:"10.0.0.1/32"})).toEqual({mcpReleaseSucceeded:false,stage:"candidate_payload",category:"invalid_payload"});expect(mutations()).toHaveLength(0);
+ });
+ it("reports overwrite conflict at the existence check",async()=>{
+  const original=az.getMockImplementation()!;az.mockImplementation(async args=>args[0]==="resource"?"1":original(args));
+  expect(await diagnosticFailure()).toEqual({mcpReleaseSucceeded:false,stage:"candidate_existence_check",category:"resource_conflict"});expect(mutations()).toHaveLength(0);
+ });
+ it.each(["candidate_existence_check","candidate_arm_put","candidate_evidence"])("unknown %s failures cannot leak command/body/header/env canaries",async stage=>{
+  const canary="SECRET-CANARY-token-cookie-password-OTP";
+  const error=Object.assign(new Error(canary),{stderr:canary,stdout:canary,body:canary,headers:{Authorization:canary},category:canary,stage:canary});
+  const original=az.getMockImplementation()!;
+  az.mockImplementation(async args=>{if((stage==="candidate_existence_check"&&args[0]==="resource")||(stage==="candidate_arm_put"&&args.includes("put")))throw error;return original(args);});
+  const result=await diagnosticFailure(stage==="candidate_evidence"?{writeFile:async(path:string)=>{if(path.endsWith("mcp-release.json"))throw error;}}:{});
+  expect(result).toEqual({mcpReleaseSucceeded:false,stage,category:"unknown"});expect(JSON.stringify(result)).not.toContain(canary);
+ });
+ it("retains sanitized Azure authorization category at ARM PUT",async()=>{
+  const original=az.getMockImplementation()!;az.mockImplementation(async args=>{if(args.includes("put"))throw releaseFailure("authorization_failed");return original(args);});
+  expect(await diagnosticFailure()).toEqual({mcpReleaseSucceeded:false,stage:"candidate_arm_put",category:"authorization_failed"});
  });
 });

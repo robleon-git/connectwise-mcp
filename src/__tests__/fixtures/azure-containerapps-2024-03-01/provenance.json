@@ -1,0 +1,16 @@
+{
+  "apiVersion": "2024-03-01",
+  "resourceType": "Microsoft.App/containerApps",
+  "sources": [
+    {
+      "file": "containerapps.json",
+      "url": "https://raw.githubusercontent.com/Azure/azure-resource-manager-schemas/main/schemas/2024-03-01/Microsoft.App.ContainerApps.json",
+      "sha256": "bb73eb756edfd272712b04a18810d866d0c369606dc778387ed91e07c4bad027"
+    },
+    {
+      "file": "common-definitions.json",
+      "url": "https://schema.management.azure.com/schemas/common/definitions.json",
+      "sha256": "690e8c251e29220ded85d67a9fe47d2c27fcbb3e0fb804409fbfb2fa8314086f"
+    }
+  ]
+}

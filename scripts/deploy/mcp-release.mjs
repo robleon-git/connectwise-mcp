@@ -2,7 +2,8 @@
 import { createHash } from "node:crypto";
 import { mkdir,readFile,writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
-import { configuration,az,execute,assertSubscription } from "./common.mjs";
+import { configuration,execute,assertSubscription } from "./common.mjs";
+import { mcpAz, releaseFailure, markReleaseStage, releaseDiagnostic } from "./mcp-release-diagnostics.mjs";
 import { assessMcpImpact } from "./mcp-impact.mjs";
 import { release as controlRelease } from "./release.mjs";
 import { requireManualMcpWorkflow } from "./mcp-evidence-download.mjs";
@@ -15,7 +16,7 @@ export const ISSUER = "https://api.descope.com/v1/apps/agentic/P3KF3ouEKxhaIJBil
 export const JWKS = "https://api.descope.com/P3KF3ouEKxhaIJBilPItOXL8i76g/.well-known/jwks.json";
 export const ACCEPTANCE_KEYS = ["ownerLinked","customerOneConnected","secondCustomerSetupDenied","unknownPrincipalZeroCalls","invalidEntitlementZeroCalls","malformedReferencesNoCalls","crossAccountDenied","concurrencyIsolated","exactReadTools","schemasUnchanged","noPilotFallback","sanitizedEvidence"];
 const shaPattern=/^[a-f0-9]{40}$/;
-export function mcpImage(c,image) {if(typeof image!=="string"||!new RegExp(`^${c.registry}\\.azurecr\\.io/connectwise-mcp@sha256:[a-f0-9]{64}$`).test(image))throw new Error("invalid_mcp_image");return image;}
+export function mcpImage(c,image) {if(typeof image!=="string"||!new RegExp(`^${c.registry}\\.azurecr\\.io/connectwise-mcp@sha256:[a-f0-9]{64}$`).test(image))throw releaseFailure("invalid_payload","invalid_mcp_image");return image;}
 function controlImage(c,image) {if(typeof image!=="string"||!new RegExp(`^${c.registry}\\.azurecr\\.io/connectwise-control-api@sha256:[a-f0-9]{64}$`).test(image))throw new Error("invalid_control_image");return image;}
 export function acceptance(value) {
   if(!value||typeof value!=="object"||Array.isArray(value)||Object.keys(value).length!==ACCEPTANCE_KEYS.length||ACCEPTANCE_KEYS.some(k=>value[k]!==true))throw new Error("candidate_acceptance_incomplete");
@@ -25,7 +26,7 @@ export function operatorCidr(cidr) {
   const match=typeof cidr==="string"&&cidr.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/32$/);
   if(!match||match.slice(1).some(n=>Number(n)>255)||[0,10,127].includes(Number(match[1]))||Number(match[1])>=224||
     (Number(match[1])===172&&Number(match[2])>=16&&Number(match[2])<=31)||(Number(match[1])===192&&Number(match[2])===168)||
-    (Number(match[1])===169&&Number(match[2])===254))throw new Error("operator_public_ipv4_required");
+    (Number(match[1])===169&&Number(match[2])===254))throw releaseFailure("invalid_payload","operator_public_ipv4_required");
   return cidr;
 }
 export function mcpEnvironment(c) {return [
@@ -37,7 +38,7 @@ export function candidateResource(c,image,cidr) {
   mcpImage(c,image);operatorCidr(cidr);
   const shared=`/subscriptions/${c.subscriptionId}/resourceGroups/${c.sharedResourceGroup}/providers`;
   const pull=`${shared}/Microsoft.ManagedIdentity/userAssignedIdentities/connectwise-mcp-pull-id`;
-  return {location:"eastus",identity:{type:"SystemAssigned, UserAssigned",userAssignedIdentities:{[pull]:{}}},properties:{managedEnvironmentId:`${shared}/Microsoft.App/managedEnvironments/monotorr-prod-aca-env`,
+  return {location:"eastus",identity:{type:"SystemAssigned,UserAssigned",userAssignedIdentities:{[pull]:{}}},properties:{managedEnvironmentId:`${shared}/Microsoft.App/managedEnvironments/monotorr-prod-aca-env`,
     configuration:{activeRevisionsMode:"Single",registries:[{server:`${c.registry}.azurecr.io`,identity:pull}],ingress:{external:true,allowInsecure:false,targetPort:8080,transport:"auto",
       ipSecurityRestrictions:[{name:"operator-only",action:"Allow",ipAddressRange:cidr}],traffic:[{latestRevision:true,weight:100}]}},
     template:{containers:[{name:MCP_CANDIDATE,image,env:mcpEnvironment(c),resources:{cpu:0.5,memory:"1Gi"}}],scale:{minReplicas:1,maxReplicas:1}}}};
@@ -76,7 +77,9 @@ export function baseline(c,raw) {
   mcpImage(c,raw.image);return {fingerprintVersion:FINGERPRINT_VERSION,revision:raw.revision,image:raw.image,mode:"Single",traffic:raw.traffic,probeCount:raw.probeCount,configFingerprint:raw.configFingerprint,preservedFingerprint:raw.preservedFingerprint};
 }
 export async function mcpRelease(action,inputs={},dependencies={}) {
-  const call=dependencies.az||az,run=dependencies.execute||execute,read=dependencies.readFile||readFile,write=dependencies.writeFile||writeFile;
+  let stage="release";
+  try {
+  const call=dependencies.az||mcpAz,run=dependencies.execute||execute,read=dependencies.readFile||readFile,write=dependencies.writeFile||writeFile;
   const c=await (dependencies.configuration||configuration)();
   const head=(await run("git",["rev-parse","HEAD"])).stdout.trim();
   if(!shaPattern.test(head)||inputs.reviewedSha!==head)throw new Error("reviewed_source_mismatch");
@@ -106,11 +109,12 @@ export async function mcpRelease(action,inputs={},dependencies={}) {
     if(!state.baseline||!/^connectwise-mcp-pilot--[a-z0-9-]+$/.test(state.baseline.revision||"")||state.baseline.mode!=="Single"||!/^[a-f0-9]{64}$/.test(state.baseline.configFingerprint||""))throw new Error("invalid_rollback_evidence");
     mcpImage(c,state.baseline.image);return state;
   };
-  const unchanged=async state=>{if(canonicalJson(await current())!==canonicalJson(baseline(c,state.baseline)))throw new Error("production_baseline_changed");};
+  const unchanged=async state=>{if(canonicalJson(await current())!==canonicalJson(baseline(c,state.baseline)))throw releaseFailure("baseline_changed","production_baseline_changed");};
   const publicSmoke=()=> (dependencies.smoke||smoke)("https://api.monotorr.com","mcp");
   if(action==="build") {
     if(inputs.ownerBaselineConnected!==true||inputs.baselineReadToolsVerified!==true)throw new Error("fresh_owner_and_inventory_baseline_required");
-    const before=await current();await publicSmoke();
+    stage="baseline";
+    const before=await current();await publicSmoke();stage="release";
     const build=async(repository,dockerfile)=>{
       const exists=await call(["acr","repository","list","-n",c.registry,"--query",`contains(@, '${repository}')`,"-o","tsv"]);
       if(exists==="true"&&await call(["acr","repository","show-tags","-n",c.registry,"--repository",repository,"--query",`contains(@, '${head}')`,"-o","tsv"])==="true")throw new Error("immutable_build_already_exists");
@@ -123,8 +127,10 @@ export async function mcpRelease(action,inputs={},dependencies={}) {
     await save({fingerprintVersion:FINGERPRINT_VERSION,sha:head,mcpImage:mcp,controlImage:control,baseline:before,baselineReadToolsVerified:true,ownerBaselineConnected:true});
     return {built:true};
   }
+  stage="baseline";
   const state=await load();
   if(action!=="rollback"&&action!=="cleanup")await unchanged(state);
+  stage="release";
   if(action==="prepare-control") {
     if(!/^[A-Za-z0-9._-]{1,256}$/.test(inputs.linkingClientId||""))throw new Error("fixed_linking_client_required");
     // Reuse existing immutable build/migration/candidate mechanics, never its guarded promotion.
@@ -151,14 +157,19 @@ export async function mcpRelease(action,inputs={},dependencies={}) {
     await (dependencies.smoke||smoke)(`https://${fqdn}`,"control-api");await publicSmoke();state.controlPromoted=true;await save(state);return {controlPromoted:true};
   }
   if(action==="candidate") {
+    stage="candidate_payload";
     const resource=candidateResource(c,state.mcpImage,inputs.operatorCidr);
     // PUT exists only after an explicit absence check. Never overwrite another candidate.
+    stage="candidate_existence_check";
     const exists=await call(["resource","list","-g",c.resourceGroup,"--resource-type","Microsoft.App/containerApps","--query",`length([?name=='${MCP_CANDIDATE}'])`,"-o","tsv"]);
-    if(exists!=="0")throw new Error("candidate_already_exists");
+    if(exists!=="0")throw releaseFailure("resource_conflict","candidate_already_exists");
+    stage="candidate_payload";
     await write(".delivery/mcp-candidate.json",JSON.stringify(resource)+"\n");
     // ARM PUT avoids CLI convenience logic that may attempt implicit ACR role assignments.
     const resourceId=`/subscriptions/${c.subscriptionId}/resourceGroups/${c.resourceGroup}/providers/Microsoft.App/containerApps/${MCP_CANDIDATE}`;
+    stage="candidate_arm_put";
     await call(["rest","--method","put","--url",`${resourceId}?api-version=2024-03-01`,"--body","@.delivery/mcp-candidate.json","-o","none"]);
+    stage="candidate_evidence";
     state.candidate={name:MCP_CANDIDATE,operatorCidr:inputs.operatorCidr};await save(state);return {candidateCreated:true,permissionsRequireSeparateOperatorApproval:true};
   }
   const candidateReady=async()=>{
@@ -202,6 +213,7 @@ export async function mcpRelease(action,inputs={},dependencies={}) {
     if(roles.length)throw new Error("candidate_role_cleanup_required");
     await call(["containerapp","delete","-n",MCP_CANDIDATE,"-g",c.resourceGroup,"--yes","-o","none"]);return {candidateRemoved:true};
   }
+  }catch(error){throw markReleaseStage(error,stage);}
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href) {
   try {
@@ -211,5 +223,5 @@ if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href) {
       ownerBaselineConnected:process.env.CW_OWNER_BASELINE_CONNECTED==="true",baselineReadToolsVerified:process.env.CW_BASELINE_READ_TOOLS_VERIFIED==="true",emergencyPilotRollbackApproved:process.env.CW_EMERGENCY_PILOT_ROLLBACK_APPROVED==="true",
       acceptance:process.env.CW_CANDIDATE_ACCEPTANCE?JSON.parse(process.env.CW_CANDIDATE_ACCEPTANCE):undefined};
     console.log(JSON.stringify(await mcpRelease(process.argv[2],inputs)));
-  }catch {console.error(JSON.stringify({mcpReleaseSucceeded:false,details:"redacted"}));process.exitCode=1;}
+  }catch(error){console.error(JSON.stringify(releaseDiagnostic(error)));process.exitCode=1;}
 }
