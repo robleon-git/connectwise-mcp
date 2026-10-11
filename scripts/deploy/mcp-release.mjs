@@ -7,6 +7,8 @@ import { assessMcpImpact } from "./mcp-impact.mjs";
 import { release as controlRelease } from "./release.mjs";
 import { requireManualMcpWorkflow } from "./mcp-evidence-download.mjs";
 import { smoke } from "./smoke.mjs";
+export const FINGERPRINT_VERSION = "canonical-semantic-v1";
+export const BASELINE_API_VERSION = "2025-07-01";
 export const MCP_TARGET = "connectwise-mcp-pilot";
 export const MCP_CANDIDATE = "connectwise-mcp-slice3-candidate";
 export const ISSUER = "https://api.descope.com/v1/apps/agentic/P3KF3ouEKxhaIJBilPItOXL8i76g/RS3KF4WZS6MDxjAyDFqsBTcDQC7au";
@@ -40,15 +42,38 @@ export function candidateResource(c,image,cidr) {
       ipSecurityRestrictions:[{name:"operator-only",action:"Allow",ipAddressRange:cidr}],traffic:[{latestRevision:true,weight:100}]}},
     template:{containers:[{name:MCP_CANDIDATE,image,env:mcpEnvironment(c),resources:{cpu:0.5,memory:"1Gi"}}],scale:{minReplicas:1,maxReplicas:1}}}};
 }
+// Sort only object keys; array order and scalar values remain significant.
+export function canonicalJson(value) {
+  const sort = value => Array.isArray(value) ? value.map(sort) : value && typeof value === "object"
+    ? Object.fromEntries(Object.keys(value).sort().map(key=>[key,sort(value[key])])) : value;
+  return JSON.stringify(sort(value));
+}
+// Only defaults proven equivalent across the stable/preview ARM representations.
+export function semanticProjection(raw) {
+  const result = structuredClone(raw);
+  for (const container of result.template?.containers ?? []) {
+    if (container.imageType === "ContainerImage") delete container.imageType;
+  }
+  if (result.template?.customMetricsSettings === null) delete result.template.customMetricsSettings;
+  if (result.ingress?.targetPortHttpScheme === null) delete result.ingress.targetPortHttpScheme;
+  return result;
+}
+const fingerprint = value => createHash("sha256").update(canonicalJson(value)).digest("hex");
+export function configurationFingerprint(raw) {
+  const value = semanticProjection(raw);
+  return fingerprint({template:value.template,ingress:value.ingress});
+}
 // Baseline includes a configuration fingerprint, never configuration values or secrets.
 export function preservedConfiguration(raw) {
-  return createHash("sha256").update(JSON.stringify({ingress:raw.ingress,identity:raw.identity,scale:raw.template?.scale,
-    containers:raw.template?.containers?.map(container=>({name:container.name,resources:container.resources,command:container.command,args:container.args,probes:container.probes,volumeMounts:container.volumeMounts})),volumes:raw.template?.volumes})).digest("hex");
+  raw = semanticProjection(raw);
+  return fingerprint({ingress:raw.ingress,identity:raw.identity,scale:raw.template?.scale,
+    containers:raw.template?.containers?.map(container=>({name:container.name,resources:container.resources,command:container.command,args:container.args,probes:container.probes,volumeMounts:container.volumeMounts})),volumes:raw.template?.volumes});
 }
 export function baseline(c,raw) {
+  if(raw.fingerprintVersion!==FINGERPRINT_VERSION)throw new Error("unsupported_fingerprint_version");
   if(raw.mode!=="Single"||!/^connectwise-mcp-pilot--[a-z0-9-]+$/.test(raw.revision||"")||!Array.isArray(raw.traffic)||raw.traffic.length!==1||raw.traffic[0].weight!==100||
     !(raw.traffic[0].latestRevision===true||raw.traffic[0].revisionName===raw.revision)||typeof raw.probeCount!=="number"||typeof raw.configFingerprint!=="string"||!/^[a-f0-9]{64}$/.test(raw.preservedFingerprint||""))throw new Error("ambiguous_mcp_baseline");
-  mcpImage(c,raw.image);return {revision:raw.revision,image:raw.image,mode:"Single",traffic:raw.traffic,probeCount:raw.probeCount,configFingerprint:raw.configFingerprint,preservedFingerprint:raw.preservedFingerprint};
+  mcpImage(c,raw.image);return {fingerprintVersion:FINGERPRINT_VERSION,revision:raw.revision,image:raw.image,mode:"Single",traffic:raw.traffic,probeCount:raw.probeCount,configFingerprint:raw.configFingerprint,preservedFingerprint:raw.preservedFingerprint};
 }
 export async function mcpRelease(action,inputs={},dependencies={}) {
   const call=dependencies.az||az,run=dependencies.execute||execute,read=dependencies.readFile||readFile,write=dependencies.writeFile||writeFile;
@@ -61,20 +86,27 @@ export async function mcpRelease(action,inputs={},dependencies={}) {
   await (dependencies.assertSubscription||assertSubscription)(c);
   const target=["-n",MCP_TARGET,"-g",c.sharedResourceGroup];
   const current=async()=>{
-    const raw=JSON.parse(await call(["containerapp","show",...target,"--query","{revision:properties.latestReadyRevisionName,mode:properties.configuration.activeRevisionsMode,traffic:properties.configuration.ingress.traffic,image:properties.template.containers[0].image,probeCount:length(properties.template.containers[0].probes || `[]`),template:properties.template,ingress:properties.configuration.ingress,identity:identity}","-o","json"]));
+    const resourceId=`/subscriptions/${c.subscriptionId}/resourceGroups/${c.sharedResourceGroup}/providers/Microsoft.App/containerApps/${MCP_TARGET}`;
+    const arm=JSON.parse(await call(["rest","--method","get","--url",`${resourceId}?api-version=${BASELINE_API_VERSION}`,"-o","json"]));
+    const properties=arm.properties;
+    const raw={fingerprintVersion:FINGERPRINT_VERSION,revision:properties?.latestReadyRevisionName,
+      mode:properties?.configuration?.activeRevisionsMode,traffic:properties?.configuration?.ingress?.traffic,
+      image:properties?.template?.containers?.[0]?.image,probeCount:properties?.template?.containers?.[0]?.probes?.length ?? 0,
+      template:properties?.template,ingress:properties?.configuration?.ingress,identity:arm.identity};
     // Raw ARM template is kept in memory only; even legacy configured values are never serialized.
-    raw.configFingerprint=createHash("sha256").update(JSON.stringify({template:raw.template,ingress:raw.ingress})).digest("hex");
+    raw.configFingerprint=configurationFingerprint(raw);
     raw.preservedFingerprint=preservedConfiguration(raw);
     return baseline(c,raw);
   };
   const save=async state=>{await (dependencies.mkdir||mkdir)(".delivery",{recursive:true});await write(".delivery/mcp-release.json",JSON.stringify(state)+"\n");};
   const load=async()=>{
     const state=JSON.parse(await read(".delivery/mcp-release.json","utf8"));
+    if(state.fingerprintVersion!==FINGERPRINT_VERSION||state.baseline?.fingerprintVersion!==FINGERPRINT_VERSION)throw new Error("unsupported_fingerprint_version");
     if(state.sha!==head)throw new Error("artifact_source_mismatch");mcpImage(c,state.mcpImage);controlImage(c,state.controlImage);
     if(!state.baseline||!/^connectwise-mcp-pilot--[a-z0-9-]+$/.test(state.baseline.revision||"")||state.baseline.mode!=="Single"||!/^[a-f0-9]{64}$/.test(state.baseline.configFingerprint||""))throw new Error("invalid_rollback_evidence");
     mcpImage(c,state.baseline.image);return state;
   };
-  const unchanged=async state=>{if(JSON.stringify(await current())!==JSON.stringify(baseline(c,state.baseline)))throw new Error("production_baseline_changed");};
+  const unchanged=async state=>{if(canonicalJson(await current())!==canonicalJson(baseline(c,state.baseline)))throw new Error("production_baseline_changed");};
   const publicSmoke=()=> (dependencies.smoke||smoke)("https://api.monotorr.com","mcp");
   if(action==="build") {
     if(inputs.ownerBaselineConnected!==true||inputs.baselineReadToolsVerified!==true)throw new Error("fresh_owner_and_inventory_baseline_required");
@@ -88,7 +120,7 @@ export async function mcpRelease(action,inputs={},dependencies={}) {
       return `${c.registry}.azurecr.io/${repository}@${await call(["acr","manifest","show-metadata","--registry",c.registry,"--name",`${repository}:${head}`,"--query","digest","-o","tsv"])}`;
     };
     const mcp=mcpImage(c,await build("connectwise-mcp","Dockerfile")),control=controlImage(c,await build("connectwise-control-api","Dockerfile.control-plane"));
-    await save({sha:head,mcpImage:mcp,controlImage:control,baseline:before,baselineReadToolsVerified:true,ownerBaselineConnected:true});
+    await save({fingerprintVersion:FINGERPRINT_VERSION,sha:head,mcpImage:mcp,controlImage:control,baseline:before,baselineReadToolsVerified:true,ownerBaselineConnected:true});
     return {built:true};
   }
   const state=await load();

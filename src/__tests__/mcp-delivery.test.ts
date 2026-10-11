@@ -1,7 +1,7 @@
 import {beforeEach,describe,expect,it,vi} from "vitest";
 import {readFile} from "node:fs/promises";
 // @ts-expect-error Delivery script has no declarations.
-import {mcpRelease,mcpImage,candidateResource,preservedConfiguration,mcpEnvironment,acceptance,ACCEPTANCE_KEYS,operatorCidr,MCP_TARGET,MCP_CANDIDATE} from "../../scripts/deploy/mcp-release.mjs";
+import {mcpRelease,canonicalJson,semanticProjection,configurationFingerprint,FINGERPRINT_VERSION,BASELINE_API_VERSION,mcpImage,candidateResource,preservedConfiguration,mcpEnvironment,acceptance,ACCEPTANCE_KEYS,operatorCidr,MCP_TARGET,MCP_CANDIDATE} from "../../scripts/deploy/mcp-release.mjs";
 // @ts-expect-error Delivery script has no declarations.
 import {validateEvidenceRun,requireManualMcpWorkflow,downloadEvidence} from "../../scripts/deploy/mcp-evidence-download.mjs";
 // @ts-expect-error Operator script has no declarations.
@@ -10,24 +10,29 @@ import {candidateDiagnostic} from "../../scripts/deploy/diagnose-mcp-candidate.m
 import {diagnosticMcpTarget} from "../../scripts/validate-mcp-user-claim.mjs";
 // @ts-expect-error Operator reference has no declarations.
 import {EXPECTED_READ_TOOLS} from "../../scripts/read-only-tool-inventory.mjs";
-import {createHash} from "node:crypto";
 const sha="a".repeat(40),oldSha="b".repeat(40),digest="c".repeat(64),oldDigest="d".repeat(64);
 const c={subscriptionId:"08a97e42-1e1f-4f33-95dc-36af13337091",sharedResourceGroup:"monotorr-dev-eastus-rg",resourceGroup:"monotorr-connectwise-prod-rg",registry:"monotorrdevacr6689",databaseServer:"monotorr-cw-db-01",mcpResource:"https://api.monotorr.com/mcp",controlApi:"connectwise-control-api"};
 const image=`${c.registry}.azurecr.io/connectwise-mcp@sha256:${digest}`,oldImage=`${c.registry}.azurecr.io/connectwise-mcp@sha256:${oldDigest}`,controlImage=`${c.registry}.azurecr.io/connectwise-control-api@sha256:${digest}`;
 const template={containers:[{image:oldImage,env:[{name:"LEGACY_PRIVATE_VALUE",value:"DO-NOT-PERSIST-SECRET"}]}]},ingress={fqdn:"pilot.example",traffic:[{latestRevision:true,weight:100}]};
-const before={revision:"connectwise-mcp-pilot--0000005",image:oldImage,mode:"Single",traffic:ingress.traffic,probeCount:0,preservedFingerprint:preservedConfiguration({template,ingress}),configFingerprint:createHash("sha256").update(JSON.stringify({template,ingress})).digest("hex")};
-interface State {sha:string;mcpImage:string;controlImage:string;baseline:typeof before;controlPromoted:boolean;candidate:{name:string;operatorCidr:string};acceptance?:Record<string,string|boolean>;cutoverStarted?:boolean}
+const before={fingerprintVersion:FINGERPRINT_VERSION,revision:"connectwise-mcp-pilot--0000005",image:oldImage,mode:"Single",traffic:ingress.traffic,probeCount:0,preservedFingerprint:preservedConfiguration({template,ingress}),configFingerprint:configurationFingerprint({template,ingress})};
+interface State {fingerprintVersion:string;sha:string;mcpImage:string;controlImage:string;baseline:typeof before;controlPromoted:boolean;candidate:{name:string;operatorCidr:string};acceptance?:Record<string,string|boolean>;cutoverStarted?:boolean}
 let state:State;
 let az=vi.fn(async(_args:string[])=>""),execute=vi.fn(async(_name:string,_args:string[])=>({stdout:""})),write=vi.fn(async(_path:string,_body:string)=>{}),smoke=vi.fn(async(_origin:string,_kind:string)=>({smokePassed:true}));
 beforeEach(()=>{
- state={sha,mcpImage:image,controlImage,baseline:{...before},controlPromoted:true,candidate:{name:MCP_CANDIDATE,operatorCidr:"8.8.8.8/32"},acceptance:{...Object.fromEntries(ACCEPTANCE_KEYS.map((k:string)=>[k,true])),revision:MCP_CANDIDATE+"--candidate",image}};
+ state={fingerprintVersion:FINGERPRINT_VERSION,sha,mcpImage:image,controlImage,baseline:{...before},controlPromoted:true,candidate:{name:MCP_CANDIDATE,operatorCidr:"8.8.8.8/32"},acceptance:{...Object.fromEntries(ACCEPTANCE_KEYS.map((k:string)=>[k,true])),revision:MCP_CANDIDATE+"--candidate",image}};
  az=vi.fn(async(args:string[])=>{
-  if(args.includes(MCP_TARGET)&&args.includes("show"))return JSON.stringify({...before,template,ingress});
+  if(productionRead(args))return productionArm();
   if(args.includes(MCP_CANDIDATE)&&args.includes("show"))return args.includes("revision")?"Healthy":JSON.stringify({mode:"Single",image,health:"Succeeded",revision:MCP_CANDIDATE+"--candidate",latest:MCP_CANDIDATE+"--candidate",env:mcpEnvironment(c),restrictions:[{ipAddressRange:"8.8.8.8/32",action:"Allow"}],domains:[]});
   if(args[0]==="resource")return "0";if(args[0]==="role")return "[]";return "";
  });
  execute=vi.fn(async(_name:string,args:string[])=>({stdout:args[0]==="status"?"":sha}));write=vi.fn(async(_path:string,_body:string)=>{});smoke=vi.fn(async(_origin:string,_kind:string)=>({smokePassed:true}));
 });
+function productionRead(args:string[]) {return args[0]==="rest"&&args.includes("get")&&args.some(a=>a.endsWith(`/containerApps/${MCP_TARGET}?api-version=${BASELINE_API_VERSION}`));}
+function productionArm(patch:Record<string,unknown>={}) {
+ const v={...before,template,ingress,identity:undefined,...patch};
+ return JSON.stringify({identity:v.identity,properties:{latestReadyRevisionName:v.revision,
+   configuration:{activeRevisionsMode:v.mode,ingress:v.ingress},template:{...v.template,containers:v.template.containers.map(c=>({...c,image:v.image}))}}});
+}
 function dependencies(){return {configuration:async()=>c,assertSubscription:vi.fn(),az,execute,readFile:async()=>JSON.stringify(state),writeFile:write,mkdir:vi.fn(),smoke};}
 function input(action:string,extra={}){return {reviewedSha:sha,approval:`${action}:${sha}`,...extra};}
 function mutations(){return az.mock.calls.map(c=>c[0] as string[]).filter(args=>args.includes("update")||args.includes("create")||args.includes("put")||args.includes("copy")||args.includes("delete")||args.includes("set"));}
@@ -57,7 +62,7 @@ describe("explicit MCP delivery boundaries",()=>{
   await expect(mcpRelease("cutover",{reviewedSha:sha,approval:`candidate:${sha}`},dependencies())).rejects.toThrow("explicit_owner_action_approval_required");expect(az).not.toHaveBeenCalled();
  });
  it.each(["Multiple",undefined])("rejects %s production revision mode",async mode=>{
-  az.mockResolvedValue(JSON.stringify({...before,mode,template,ingress}));await expect(mcpRelease("candidate",input("candidate",{operatorCidr:"8.8.8.8/32"}),dependencies())).rejects.toThrow("ambiguous_mcp_baseline");expect(mutations()).toHaveLength(0);
+  az.mockResolvedValue(productionArm({mode}));await expect(mcpRelease("candidate",input("candidate",{operatorCidr:"8.8.8.8/32"}),dependencies())).rejects.toThrow("ambiguous_mcp_baseline");expect(mutations()).toHaveLength(0);
  });
  it("rejects stale artifacts and changed production baseline before writes",async()=>{
   state.sha=oldSha;await expect(mcpRelease("candidate",input("candidate"),dependencies())).rejects.toThrow("artifact_source_mismatch");expect(mutations()).toHaveLength(0);
@@ -89,7 +94,7 @@ describe("explicit MCP delivery boundaries",()=>{
  });
  it("cutover retains rollback evidence before its one production update, without mode/traffic/probe changes",async()=>{
   let changed=false;const original=az.getMockImplementation()!;
-  az.mockImplementation(async args=>{if(args.includes("update")){changed=true;return "";}if(changed&&args.includes(MCP_TARGET)&&args.includes("show"))return JSON.stringify({...before,image,revision:MCP_TARGET+"--s3-"+sha.slice(0,12),template,ingress});return original(args);});
+  az.mockImplementation(async args=>{if(args.includes("update")){changed=true;return "";}if(changed&&productionRead(args))return productionArm({image,revision:MCP_TARGET+"--s3-"+sha.slice(0,12)});return original(args);});
   await expect(mcpRelease("cutover",input("cutover",{ownerBaselineConnected:true,baselineReadToolsVerified:true,emergencyPilotRollbackApproved:true}),dependencies())).resolves.toMatchObject({cutoverConfirmed:true});
   expect(mutations()).toHaveLength(1);const args=mutations()[0];expect(args).toContain(MCP_TARGET);expect(args).toContain(image);expect(args).not.toMatchObject(expect.arrayContaining(["--revisions-mode"]));
   expect(args).not.toContain("traffic");expect(args).not.toContain("probe");expect(args).toContain("CW_DB_USER=cw_mcp");expect(args).toContain("--remove-env-vars");
@@ -98,7 +103,7 @@ describe("explicit MCP delivery boundaries",()=>{
  });
  it("refuses to confirm cutover if protected probes or ingress changed",async()=>{
   let changed=false;const original=az.getMockImplementation()!;
-  az.mockImplementation(async args=>{if(args.includes("update")){changed=true;return "";}if(changed&&args.includes(MCP_TARGET)&&args.includes("show"))return JSON.stringify({...before,image,revision:MCP_TARGET+"--s3-"+sha.slice(0,12),template:{...template,containers:[{...template.containers[0],probes:[{type:"Readiness"}]}]},ingress});return original(args);});
+  az.mockImplementation(async args=>{if(args.includes("update")){changed=true;return "";}if(changed&&productionRead(args))return productionArm({image,revision:MCP_TARGET+"--s3-"+sha.slice(0,12),template:{...template,containers:[{...template.containers[0],probes:[{type:"Readiness"}]}]}});return original(args);});
   await expect(mcpRelease("cutover",input("cutover",{ownerBaselineConnected:true,baselineReadToolsVerified:true,emergencyPilotRollbackApproved:true}),dependencies())).rejects.toThrow("cutover_not_confirmed");
   expect(mutations()).toHaveLength(1);expect(JSON.parse(write.mock.calls[0][1]).cutoverStarted).toBe(true);
  });
@@ -108,13 +113,88 @@ describe("explicit MCP delivery boundaries",()=>{
  });
  it("rollback copies only the recorded pilot revision/image, never deletes customer data",async()=>{
   state.cutoverStarted=true;let restored=false;const original=az.getMockImplementation()!;
-  az.mockImplementation(async args=>{if(args.includes("copy")){restored=true;return "";}if(!restored&&args.includes(MCP_TARGET)&&args.includes("show"))return JSON.stringify({...before,image,revision:MCP_TARGET+"--s3-"+sha.slice(0,12),template,ingress});return original(args);});
+  az.mockImplementation(async args=>{if(args.includes("copy")){restored=true;return "";}if(!restored&&productionRead(args))return productionArm({image,revision:MCP_TARGET+"--s3-"+sha.slice(0,12)});return original(args);});
   await expect(mcpRelease("rollback",input("rollback",{emergencyPilotRollbackApproved:true}),dependencies())).resolves.toMatchObject({temporaryPrelaunchPilotRecovery:true});expect(mutations()).toEqual([expect.arrayContaining(["revision","copy","--from-revision",before.revision,"--image",oldImage])]);
   expect(az.mock.calls.some(c=>c[0].includes("job")||c[0].includes("keyvault")||c[0].includes("traffic"))).toBe(false);
  });
  it("cleanup refuses to delete a candidate before its separate role cleanup",async()=>{
   const original=az.getMockImplementation()!;az.mockImplementation(async args=>args.includes("identity.principalId")?"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa":args[0]==="role"?'["assignment"]':original(args));
   await expect(mcpRelease("cleanup",input("cleanup"),dependencies())).rejects.toThrow("candidate_role_cleanup_required");expect(mutations()).toHaveLength(0);
+ });
+});
+describe("canonical semantic release baseline",()=>{
+ const driftCases:[string,Record<string,unknown>][]=[
+  ["image",{image}], ["revision",{revision:MCP_TARGET+"--other"}], ["mode",{mode:"Multiple"}],
+  ["traffic",{ingress:{...ingress,traffic:[{latestRevision:true,weight:50}]}}],
+  ["identity",{identity:{type:"SystemAssigned",principalId:"different"}}],
+  ["ingress security",{ingress:{...ingress,allowInsecure:true}}],
+  ...[ ["CPU",{resources:{cpu:1}}], ["memory",{resources:{memory:"2Gi"}}],
+    ["probe",{probes:[{type:"Readiness",httpGet:{path:"/changed"}}]}],
+    ["command",{command:["different"]}], ["args",{args:["different"]}],
+    ["mount",{volumeMounts:[{volumeName:"different",mountPath:"/data"}]}],
+    ["environment value",{env:[{name:"LEGACY_PRIVATE_VALUE",value:"changed"}]}],
+    ["secret reference",{env:[{name:"LEGACY_PRIVATE_VALUE",secretRef:"changed"}]}],
+    ["unexpected image type",{imageType:"Artifact"}]
+  ].map(([name,patch])=>[name,{template:{...template,containers:[{...template.containers[0],...patch as object}]}}] as [string,Record<string,unknown>]),
+  ["volume",{template:{...template,volumes:[{name:"different",storageType:"EmptyDir"}]}}],
+  ["non-null metrics",{template:{...template,customMetricsSettings:{exposed:true}}}],
+  ["non-null ingress scheme",{ingress:{...ingress,targetPortHttpScheme:"https"}}],
+  ["unknown template field",{template:{...template,unknownNewField:true}}],
+  ["unknown ingress field",{ingress:{...ingress,unknownNewField:true}}]
+ ];
+ it.each(driftCases)("fails closed on %s drift before mutation",async(_name,patch)=>{
+  const original=az.getMockImplementation()!;
+  az.mockImplementation(async args=>productionRead(args)?productionArm(patch):original(args));
+  await expect(mcpRelease("candidate",input("candidate",{operatorCidr:"8.8.8.8/32"}),dependencies())).rejects.toThrow();
+  expect(mutations()).toHaveLength(0);
+ });
+ it.each([
+  ["image default",{template:{...template,containers:[{...template.containers[0],imageType:"ContainerImage"}]}}],
+  ["null metrics",{template:{...template,customMetricsSettings:null}}],
+  ["null ingress scheme",{ingress:{...ingress,targetPortHttpScheme:null}}],
+  ["all demonstrated defaults",{template:{...template,customMetricsSettings:null,containers:[{...template.containers[0],imageType:"ContainerImage"}]},ingress:{...ingress,targetPortHttpScheme:null}}]
+ ])("accepts %s without changing the evidence",async(_name,patch)=>{
+  const original=az.getMockImplementation()!;
+  az.mockImplementation(async args=>productionRead(args)?productionArm(patch as Record<string,unknown>):original(args));
+  await expect(mcpRelease("candidate",input("candidate",{operatorCidr:"8.8.8.8/32"}),dependencies())).resolves.toMatchObject({candidateCreated:true});
+  expect(state.baseline).toEqual(before);expect(mutations()).toHaveLength(1);
+ });
+ it("sorts object keys recursively but preserves arrays and scalar values",()=>{
+  expect(canonicalJson({b:{z:2,a:1},a:[{z:2,a:1},false,null,0,""]})).toBe(canonicalJson({a:[{a:1,z:2},false,null,0,""],b:{a:1,z:2}}));
+  expect(canonicalJson([1,2])).not.toBe(canonicalJson([2,1]));
+  expect(canonicalJson({value:"1"})).not.toBe(canonicalJson({value:1}));
+ });
+ it("accepts recursively reordered ARM and evidence keys",async()=>{
+  const reverse=(v:unknown):unknown=>Array.isArray(v)?v.map(reverse):v&&typeof v==="object"?Object.fromEntries(Object.entries(v).reverse().map(([k,x])=>[k,reverse(x)])):v;
+  const original=az.getMockImplementation()!;
+  az.mockImplementation(async args=>productionRead(args)?JSON.stringify(reverse(JSON.parse(productionArm()))):original(args));
+  await expect(mcpRelease("candidate",input("candidate",{operatorCidr:"8.8.8.8/32"}),{...dependencies(),readFile:async()=>JSON.stringify(reverse(state))})).resolves.toMatchObject({candidateCreated:true});
+ });
+ it("does not mutate the raw projection or remove unknown/non-null fields",()=>{
+  const raw={template:{customMetricsSettings:{enabled:true},containers:[{imageType:"Artifact",unknown:true}]},ingress:{targetPortHttpScheme:"https",unknown:true}};
+  expect(semanticProjection(raw)).toEqual(raw);expect(semanticProjection(raw)).not.toBe(raw);
+ });
+ it("pins only production baseline GET to the verified stable API",async()=>{
+  await mcpRelease("candidate",input("candidate",{operatorCidr:"8.8.8.8/32"}),dependencies());
+  const reads=az.mock.calls.map(c=>c[0]).filter(productionRead);
+  expect(reads).toHaveLength(1);expect(BASELINE_API_VERSION).toBe("2025-07-01");
+  expect(reads[0]).toEqual(["rest","--method","get","--url",`/subscriptions/${c.subscriptionId}/resourceGroups/${c.sharedResourceGroup}/providers/Microsoft.App/containerApps/${MCP_TARGET}?api-version=2025-07-01`,"-o","json"]);
+ });
+ it.each([undefined,"legacy","future-v2"])("rejects incompatible evidence version %s before baseline read or writes",async version=>{
+  state.fingerprintVersion=version as string;
+  await expect(mcpRelease("candidate",input("candidate"),dependencies())).rejects.toThrow("unsupported_fingerprint_version");expect(az).not.toHaveBeenCalled();
+ });
+ it("rejects a mismatched baseline version",async()=>{
+  state.baseline.fingerprintVersion="legacy";
+  await expect(mcpRelease("candidate",input("candidate"),dependencies())).rejects.toThrow("unsupported_fingerprint_version");expect(az).not.toHaveBeenCalled();
+ });
+ it("new build declares the version and retains rollback revision/image without secrets",async()=>{
+  const original=az.getMockImplementation()!;az.mockImplementation(async args=>args[0]==="acr"?args.includes("digest")?"sha256:"+digest:args.includes("repository")?"false":"":original(args));
+  await mcpRelease("build",input("build",{ownerBaselineConnected:true,baselineReadToolsVerified:true}),dependencies());
+  const saved=JSON.parse(write.mock.calls[0][1]);
+  expect(saved.fingerprintVersion).toBe(FINGERPRINT_VERSION);expect(saved.baseline.fingerprintVersion).toBe(FINGERPRINT_VERSION);
+  expect(saved.baseline.revision).toBe(before.revision);expect(saved.baseline.image).toBe(oldImage);
+  expect(JSON.stringify(saved)).not.toContain("DO-NOT-PERSIST-SECRET");
  });
 });
 describe("delivery input/provenance restrictions",()=>{
