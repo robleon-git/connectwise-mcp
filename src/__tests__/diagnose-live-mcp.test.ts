@@ -9,7 +9,7 @@ interface Operator {
     openBrowser: (url: string) => Promise<boolean> }) => Promise<unknown>;
     openBrowser?: (url: string) => Promise<boolean>; azure?: () => Promise<Logs>;
     output: (text: string) => void; progress: (text: string) => void }) => Promise<number>;
-  retrieveAzureDiagnostics: (command: (args: string[]) => Promise<string>, options?: { pause: (delay: number) => Promise<void> }) => Promise<Logs>;
+  retrieveAzureDiagnostics: (command: (args: string[]) => Promise<string>, options?: { pause: (delay: number) => Promise<void>; candidate?: boolean }) => Promise<Logs>;
   filterAzureLogs: (text: string) => Event[];
   safeAzureEvent: (input: unknown) => Event | undefined;
 }
@@ -195,4 +195,26 @@ describe("read-only dynamic Azure log retrieval", () => {
     expect(progress).toHaveBeenCalledWith(JSON.stringify({ event: "auth.accepted", requestId, claimPath: "/sub" }));
     expect(JSON.stringify(progress.mock.calls)).not.toContain("PRIVATE");
   });
+});
+
+
+describe("Slice 3 access-evidence retrieval whitelist",()=>{
+ it("extracts only allowed counters/outcome from the Azure envelope",()=>{
+  const event={event:"mcp.access_evidence",requestId,outcome:"access_denied",customerSecretGetAttempts:0,connectWiseGetAttempts:0};
+  expect(operator.filterAzureLogs(JSON.stringify({Log:JSON.stringify({...event,sub:"PRIVATE",secretRef:"PRIVATE",Authorization:"PRIVATE",body:"PRIVATE"})}))).toEqual([event]);
+  for(const patch of [{outcome:"PRIVATE"},{customerSecretGetAttempts:-1},{connectWiseGetAttempts:NaN},{connectWiseGetAttempts:1000001}])expect(operator.safeAzureEvent({...event,...patch})).toBeUndefined();
+ });
+ it("candidate retrieval targets only the temporary app/resource group",async()=>{
+  const revision="connectwise-mcp-slice3-candidate--ready";
+  const command=vi.fn(async(args:string[])=>args[1]==="revision"?JSON.stringify([revision]):args[1]==="replica"?'[{"name":"candidate-replica","containers":["candidate"]}]':JSON.stringify({Log:JSON.stringify({event:"mcp.access_evidence",requestId,outcome:"setup_required",customerSecretGetAttempts:0,connectWiseGetAttempts:0})}));
+  const result=await operator.retrieveAzureDiagnostics(command,{candidate:true,pause:vi.fn()});expect(result.events).toHaveLength(1);
+  for(const [args] of command.mock.calls){expect(args).toContain("connectwise-mcp-slice3-candidate");expect(args).toContain("monotorr-connectwise-prod-rg");expect(args).not.toContain("connectwise-mcp-pilot");}
+ });
+ it("narrow collector never prints raw errors, unknown fields or general log events",async()=>{
+  const {collectAccessEvidence}=await import("../../scripts/deploy/mcp-access-evidence.mjs" as string);
+  const output=vi.fn(),retrieve=vi.fn(async()=>({status:"retrieved",events:[{event:"auth.accepted",requestId,raw:"PRIVATE"},{event:"mcp.access_evidence",requestId,outcome:"access_denied",customerSecretGetAttempts:0,connectWiseGetAttempts:0,raw:"PRIVATE"}]}));
+  expect(await collectAccessEvidence(["candidate"],retrieve,output)).toBe(0);expect(output.mock.calls).toHaveLength(2);expect(JSON.stringify(output.mock.calls)).not.toMatch(/PRIVATE|auth.accepted/);
+  retrieve.mockClear();expect(await collectAccessEvidence(["arbitrary"],retrieve,output)).toBe(1);expect(retrieve).not.toHaveBeenCalled();
+  expect(await collectAccessEvidence(["production"],async()=>{throw new Error("PRIVATE");},output)).toBe(2);expect(JSON.stringify(output.mock.calls)).not.toContain("PRIVATE");
+ });
 });

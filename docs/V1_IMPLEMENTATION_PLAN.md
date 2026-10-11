@@ -109,7 +109,7 @@ Architecture mapping: Sections 4–8, 18–19, 31, 33, 37.
 
 **Schema:** `users`, `accounts`, `account_memberships`, `external_identities`, `auth_sessions`, `entitlements`, minimal sanitized `audit_events`. Admin registry/session implementation is deferred to Phase 6; admin routes remain denied until then. Unique external identity and one customer-account resolution per customer user; acquisition source remains separate. Entitlement sources are exactly `trial | web_paid | substack | comp`.
 
-**Backend/UI:** Login/callback/logout/session and account-status API; minimal login/Home/entitlement/logout screen. Account context is server-resolved. Identity linkage requires proof, never email-only matching. Rob's account receives the normal customer treatment. Admin-only identity is not automatically provisioned a customer account or trial.
+**Backend/UI:** Login/callback/logout/session and account-status API; minimal login/Home/entitlement/logout screen. Account context is server-resolved. Identity linkage requires proof, never email-only matching. The Monotorr account is durable; Descope identity is replaceable. Microsoft business login establishes the internal portal user/account, while native Descope authentication supplies the explicitly verified MCP issuer/subject binding. Durable account, entitlement and connection data are independent of that binding. Identity replacement is a future supported recovery operation, not Slice 3 implementation scope; initial-link uniqueness remains enforced. Rob's account receives the normal customer treatment. Admin-only identity is not automatically provisioned a customer account or trial.
 
 **Security/focused tests:** Signup concurrency, duplicate/link-substitution attempts, state/nonce validation, expired/revoked sessions, entitlement time boundaries, cross-account lookup, and customer/admin separation.
 
@@ -136,6 +136,8 @@ Architecture mapping: Sections 12–17, 20, 27–28, 33, 38.
 **Acceptance:** Each account has at most one active connection; keys are securely isolated; disconnect stops new reads. New accounts remain gated from MCP until Phase 3 completes.
 
 ## Phase 3 — Account-aware MCP execution: early isolation milestone
+
+Current Slice 3 execution scope is governed by the approved focused task and [Slice 3 design](PHASE1_SLICE3_ACCOUNT_AWARE_MCP.md). That task excludes telemetry/admin implementation: the planned recording hook below is deferred and does not block this isolation slice. Live acceptance and the full MCP release review remain pending; no control-only promotion bypass is permitted.
 
 Architecture mapping: Sections 3–6, 18–19, 30, 33, 37–38.
 
@@ -327,3 +329,6 @@ Stable customer/account IDs and one account-scoped connection already exist in a
 Before live admin access, designate a **separate** immutable internal admin identity and approve its server-side authorization/session mechanism independently of customer authorization. Decide registry/explicit app-role binding, revocation, and admin login/callback/route configuration then; no current customer email/domain/owner inference is permitted. Do not designate an identity or create a registration in this planning step. Missing designation does not block current Phase 1 work.
 
 Before the readiness slice, choose a trustworthy server-observable execution/completion boundary; externally run prompts alone cannot prove assessment execution. Before telemetry delivery, finalize bounded persistence/failure policy, daily aggregation/retention scheduling and expected metadata volume on B1ms. Before Phase 5, approve restricted comp provisioning independently of the visibility-only admin console. These are implementation decisions, not additional product features.
+
+
+Slice 3 delivery prerequisite: dedicated manual/OIDC MCP-affecting release path, request-scoped sanitized credential/CW attempt evidence, and cw_mcp-only SQL deadlines are required before live acceptance. See [Slice 3 delivery and evidence](PHASE1_SLICE3_ACCOUNT_AWARE_MCP.md#approved-repository-prerequisites--manual-mcp-delivery). Before general availability, retain a tested account-aware rollback target; the old pilot is temporary prelaunch emergency recovery only. This records an approved release safety requirement and adds no product scope.

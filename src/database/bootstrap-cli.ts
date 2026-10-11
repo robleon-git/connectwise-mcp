@@ -3,9 +3,11 @@ import { Pool } from "pg";
 import { ManagedIdentityCredential, logger as identityLogger } from "@azure/identity";
 import { SecretClient, logger as secretLogger } from "@azure/keyvault-secrets";
 import { bootstrapDatabase, bootstrapSettings, SERVICE_SECRETS } from "./bootstrap.js";
+import { bootstrapMcpReader, MCP_DATABASE_SECRET } from "./mcp-bootstrap.js";
 let pool: Pool | undefined;
 try {
-  const config = bootstrapSettings(process.env);
+  const mcp = process.env.CW_BOOTSTRAP_CONFIRM === "INITIALIZE_CONNECTWISE_MCP_READER";
+  const config = bootstrapSettings(mcp ? {...process.env,CW_BOOTSTRAP_CONFIRM:"INITIALIZE_CONNECTWISE_DATABASE"} : process.env);
   for (const logger of [identityLogger, secretLogger])
     for (const level of ["error", "warning", "info", "verbose"] as const) logger[level].log = () => {};
   const credential = new ManagedIdentityCredential({ loggingOptions: { enableUnsafeSupportLogging: false, allowLoggingAccountIdentifiers: false } });
@@ -16,8 +18,8 @@ try {
   pool = new Pool({ host: config.host, database: config.database, user: config.user, password,
     ssl: { rejectUnauthorized: true }, max: 1, connectionTimeoutMillis: 10000, query_timeout: 30000 });
   pool.on("error", () => {});
-  const result = await bootstrapDatabase(pool, { get, set: async (name, value) => {
-    if (!(SERVICE_SECRETS as readonly string[]).includes(name)) throw new Error();
+  const result = await (mcp ? bootstrapMcpReader : bootstrapDatabase)(pool, { get, set: async (name, value) => {
+    if (!(mcp ? [MCP_DATABASE_SECRET] : SERVICE_SECRETS as readonly string[]).includes(name)) throw new Error();
     await vault.setSecret(name, value, { abortSignal: AbortSignal.timeout(10000) });
   } });
   console.log(JSON.stringify(result));

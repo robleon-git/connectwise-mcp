@@ -4,28 +4,32 @@ import { configuration, assertSubscription, immutableImage, az } from "./common.
 const userRole = "4633458b-17de-408a-b874-0445c86b69e6";
 const officerRole = "b86a8fe4-44ce-4948-aee5-eccb2c155cd7";
 export async function operateBootstrap(action, dependencies = {}) {
-    if (!["run", "cleanup"].includes(action)) throw new Error("explicit_bootstrap_action_required");
+    if (!["run", "cleanup", "run-mcp", "cleanup-mcp"].includes(action)) throw new Error("explicit_bootstrap_action_required");
     const call = dependencies.az || az;
     const c = await (dependencies.configuration || configuration)();
     await (dependencies.assertSubscription || assertSubscription)(c);
+    const mcp = action.endsWith("-mcp");
     const target = ["-n", "connectwise-bootstrap", "-g", c.resourceGroup];
     const kv = `/subscriptions/${c.subscriptionId}/resourceGroups/${c.sharedResourceGroup}/providers/Microsoft.KeyVault/vaults/${c.vault}`;
-    const job = JSON.parse(await call(["containerapp", "job", "show", ...target, "--query", "{principal:identity.principalId,image:properties.template.containers[0].image,args:properties.template.containers[0].args,command:properties.template.containers[0].command,containerCount:length(properties.template.containers),parallelism:properties.configuration.manualTriggerConfig.parallelism,completionCount:properties.configuration.manualTriggerConfig.replicaCompletionCount,trigger:properties.configuration.triggerType,retries:properties.configuration.replicaRetryLimit,timeout:properties.configuration.replicaTimeout}", "-o", "json"]));
+    const job = JSON.parse(await call(["containerapp", "job", "show", ...target, "--query", "{principal:identity.principalId,image:properties.template.containers[0].image,args:properties.template.containers[0].args,command:properties.template.containers[0].command,containerCount:length(properties.template.containers),parallelism:properties.configuration.manualTriggerConfig.parallelism,completionCount:properties.configuration.manualTriggerConfig.replicaCompletionCount,confirm:properties.template.containers[0].env[?name=='CW_BOOTSTRAP_CONFIRM'].value,trigger:properties.configuration.triggerType,retries:properties.configuration.replicaRetryLimit,timeout:properties.configuration.replicaTimeout}", "-o", "json"]));
     if (!/^[a-f0-9-]{36}$/.test(job.principal || "")) throw new Error("bootstrap_identity_unavailable");
     const scopes = new Map([
         [`${kv}/secrets/cw-bootstrap-db-password`.toLowerCase(), userRole],
-        [`${kv}/secrets/cw-control-db-password`.toLowerCase(), officerRole],
-        [`${kv}/secrets/cw-migration-db-password`.toLowerCase(), officerRole],
+        ...(mcp ? [[`${kv}/secrets/cw-mcp-db-password`.toLowerCase(), officerRole]] : [
+            [`${kv}/secrets/cw-control-db-password`.toLowerCase(), officerRole],
+            [`${kv}/secrets/cw-migration-db-password`.toLowerCase(), officerRole],
+        ]),
     ]);
     const assignments = async () => JSON.parse(await call(["role", "assignment", "list", "--all", "--fill-principal-name", "false", "--query", `[?principalId=='${job.principal}'].{id:id,scope:scope,role:roleDefinitionId}`, "-o", "json"]));
     let succeeded = false, cleaned = true;
     try {
-        if (action === "run") {
+        if (action.startsWith("run")) {
             immutableImage(c, job.image);
             if (job.containerCount !== 1 || job.parallelism !== 1 || job.completionCount !== 1 || job.command?.length !== 1 || job.command[0] !== "node" || job.args?.length !== 1 || job.args[0] !== "dist/database/bootstrap-cli.js" || job.trigger !== "Manual" || job.retries !== 0 || job.timeout !== 180)
                 throw new Error();
+            if (mcp && (job.confirm?.length !== 1 || job.confirm[0] !== "INITIALIZE_CONNECTWISE_MCP_READER")) throw new Error();
             const roles = await assignments();
-            if (roles.length !== 3 || new Set(roles.map(r => r.scope.toLowerCase())).size !== 3 || roles.some(r => scopes.get(r.scope.toLowerCase()) !== r.role.split("/").at(-1))) throw new Error();
+            if (roles.length !== scopes.size || new Set(roles.map(r => r.scope.toLowerCase())).size !== scopes.size || roles.some(r => scopes.get(r.scope.toLowerCase()) !== r.role.split("/").at(-1))) throw new Error();
             const execution = await call(["containerapp", "job", "start", ...target, "--query", "name", "-o", "tsv"]);
             if (!/^[a-z0-9-]+$/.test(execution)) throw new Error();
             for (let i = 0; i < 24; i++) {
@@ -53,7 +57,7 @@ export async function operateBootstrap(action, dependencies = {}) {
         try { if ((await assignments()).length) cleaned = false; } catch { cleaned = false; }
     }
     if (!cleaned) throw new Error("bootstrap_cleanup_required");
-    if (action === "run" && !succeeded) throw new Error("database_bootstrap_failed_permissions_removed");
+    if (action.startsWith("run") && !succeeded) throw new Error("database_bootstrap_failed_permissions_removed");
     return { databaseBootstrapSucceeded: succeeded, bootstrapPermissionsRemoved: true, bootstrapJobDeleted: true };
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

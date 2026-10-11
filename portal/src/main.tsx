@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./style.css";
+import { AiSetup } from "./AiSetup";
 import { ConnectionForm } from "./ConnectionForm";
 const API = "https://api.monotorr.com/connectwise/v1";
 interface Status {
@@ -46,6 +47,7 @@ function CustomerPortal() {
           <><p>Next action: Connect ConnectWise</p>{status.connectwise.setupAvailable&&status.entitlement.allowed?
           setup?<ConnectionForm onConnected={()=>{setSetup(false);setLoading(true);setRefresh(n=>n+1);}}/>:<button type="button" onClick={()=>setSetup(true)}>Connect ConnectWise</button>:
           <p>Connection setup is not currently available.</p>}</>}
+        <AiSetup />
         <button type="button" onClick={() => { void logout(); }}>Log out</button>
       </section> : <><h2>Your account</h2><p>Sign up or sign in with your Microsoft business account.</p>
         <a href={`${API}/auth/login`}>Sign in / Sign up with Microsoft</a></>}

@@ -44,7 +44,7 @@ export { buildConfig, resolveGatewayConfig } from "./config.js";
  * @param configOverride - Optional service configuration; null means unconfigured.
  *   When provided, the client is built from it instead of reading process.env.
  */
-export function createMcpServer(configOverride?: CwManageConfig | null, requiredScope = "connectwise.read"): McpServer {
+export function createMcpServer(configOverride?: CwManageConfig | null, requiredScope = "connectwise.read", requestClient?: CwManageClient): McpServer {
   const server = new McpServer({
     name: "connectwise-manage-mcp",
     version: "1.4.0",
@@ -92,7 +92,7 @@ export function createMcpServer(configOverride?: CwManageConfig | null, required
     return server;
   }
 
-  const client = new CwManageClient(config);
+  const client = requestClient ?? new CwManageClient(config);
 
   registerTicketTools(server, client);
   registerCompanyTools(server, client);

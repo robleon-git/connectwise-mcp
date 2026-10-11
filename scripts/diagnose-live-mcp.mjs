@@ -30,6 +30,11 @@ export function safeAzureEvent(input) {
     if (input.claimPath === "/sub" || input.claimPath === "[configured]") event.claimPath = input.claimPath;
     return event;
   }
+  if (input.event === "mcp.access_evidence") {
+    if (!["authentication_denied","request_denied","access_denied","setup_required","service_unavailable","authorized"].includes(input.outcome) ||
+        ![input.customerSecretGetAttempts,input.connectWiseGetAttempts].every(n=>Number.isInteger(n)&&n>=0&&n<=1000000)) return undefined;
+    return {...event,outcome:input.outcome,customerSecretGetAttempts:input.customerSecretGetAttempts,connectWiseGetAttempts:input.connectWiseGetAttempts};
+  }
   if (input.event !== "mcp.request" && input.event !== "mcp.response") return undefined;
   if (!httpMethods.has(input.method) || input.path !== "/mcp") return undefined;
   event.method = input.method; event.path = "/mcp";
@@ -83,7 +88,10 @@ async function azureCommand(args) {
 }
 
 /** Read-only snapshots of all currently active revisions/replicas; never pinned names. */
-export async function retrieveAzureDiagnostics(command = azureCommand, { pause = wait } = {}) {
+export async function retrieveAzureDiagnostics(command = azureCommand, { pause = wait, candidate = false } = {}) {
+  if (typeof candidate !== "boolean") return {status:"unavailable",events:[]};
+  const app = candidate ? "connectwise-mcp-slice3-candidate" : "connectwise-mcp-pilot";
+  const selectedTarget = candidate ? ["--name",app,"--resource-group","monotorr-connectwise-prod-rg"] : target;
   let retrieved = false;
   const events = new Map();
   // Rediscover targets each time to accommodate replica/revision changes. Brief
@@ -91,13 +99,13 @@ export async function retrieveAzureDiagnostics(command = azureCommand, { pause =
   for (const delay of [0, 2000, 4000]) {
     if (delay) await pause(delay);
     try {
-      const revisions = JSON.parse(await command(["containerapp", "revision", "list", ...target,
+      const revisions = JSON.parse(await command(["containerapp", "revision", "list", ...selectedTarget,
         "--query", "[?properties.active].name", "--output", "json", "--only-show-errors"]));
       if (!Array.isArray(revisions) || !revisions.length || revisions.length > 8) throw new Error();
       let replicasSeen = 0;
       for (const revision of revisions) {
-        if (typeof revision !== "string" || !/^connectwise-mcp-pilot--[a-z0-9-]{1,80}$/.test(revision)) throw new Error();
-        const replicas = JSON.parse(await command(["containerapp", "replica", "list", ...target,
+        if (typeof revision !== "string" || !new RegExp(`^${app}--[a-z0-9-]{1,80}$`).test(revision)) throw new Error();
+        const replicas = JSON.parse(await command(["containerapp", "replica", "list", ...selectedTarget,
           "--revision", revision, "--query", "[].{name:name,containers:properties.containers[].name}",
           "--output", "json", "--only-show-errors"]));
         if (!Array.isArray(replicas) || !replicas.length) throw new Error();
@@ -107,7 +115,7 @@ export async function retrieveAzureDiagnostics(command = azureCommand, { pause =
               !replica.containers.length || replica.containers.length > 8) throw new Error();
           for (const container of replica.containers) {
             if (typeof container !== "string" || !/^[a-z0-9-]{1,80}$/.test(container)) throw new Error();
-            const snapshot = await command(["containerapp", "logs", "show", ...target,
+            const snapshot = await command(["containerapp", "logs", "show", ...selectedTarget,
               "--revision", revision, "--replica", replica.name, "--container", container,
               "--type", "console", "--tail", "300", "--format", "json", "--only-show-errors"]);
             retrieved = true;

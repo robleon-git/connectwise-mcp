@@ -58,3 +58,6 @@ vitest.config.ts
 docker-compose.yml
 wrangler.json
 .do
+
+# Local release evidence/manifests never belong in application images
+.delivery

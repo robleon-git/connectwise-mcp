@@ -5,6 +5,9 @@ import { ConnectionStore } from "../connections/store.js";
 import { ConnectionService } from "../connections/service.js";
 import { CustomerStore } from "./auth/store.js";
 import { microsoftProvider } from "./auth/microsoft.js";
+import { mcpLinkProvider } from "./auth/mcp-link-provider.js";
+import { McpLinkStore } from "./auth/mcp-link-store.js";
+import { mcpLinkRoutes } from "./auth/mcp-link-routes.js";
 import { customerRoutes } from "./auth/routes.js";
 import { createControlApi } from "./server.js";
 let pool: ReturnType<typeof databasePool> | undefined;
@@ -21,7 +24,12 @@ try {
     if(process.env.CW_CONNECTION_SETUP_ENABLED && !["true","false"].includes(process.env.CW_CONNECTION_SETUP_ENABLED))throw new Error();
     if(process.env.CW_CONNECTION_SETUP_ENABLED==="true" && process.env.CW_CUSTOMER_FEATURES_ENABLED!=="true")throw new Error();
     const browser = process.env.CW_CUSTOMER_FEATURES_ENABLED === "true" ? await microsoftProvider(process.env) : undefined;
-    const customer = browser ? customerRoutes(new CustomerStore(db), browser.provider, browser.flowKey,{service:new ConnectionService(new ConnectionStore(db)),enabled:process.env.CW_CONNECTION_SETUP_ENABLED==="true"}) : undefined;
+    if (process.env.CW_MCP_LINKING_ENABLED && !["true","false"].includes(process.env.CW_MCP_LINKING_ENABLED)) throw new Error();
+    if (process.env.CW_MCP_LINKING_ENABLED === "true" && !browser) throw new Error();
+    const linking = process.env.CW_MCP_LINKING_ENABLED === "true" ? await mcpLinkProvider(process.env) : undefined;
+    const customers = new CustomerStore(db);
+    const ai = linking && browser ? mcpLinkRoutes(customers,new McpLinkStore(db,linking.resource.issuer),linking.provider,browser.flowKey) : undefined;
+    const customer = browser ? customerRoutes(new CustomerStore(db), browser.provider, browser.flowKey,{service:new ConnectionService(new ConnectionStore(db)),enabled:process.env.CW_CONNECTION_SETUP_ENABLED==="true"},ai) : undefined;
     const { app, drain } = createControlApi(async () => {
         const result = await db.query<{
             id: string;

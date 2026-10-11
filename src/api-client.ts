@@ -33,7 +33,7 @@ export class CwManageClient {
   private readonly apiBase: string;
   private readonly dispatcher: Agent | undefined;
 
-  constructor(config: CwManageConfig) {
+  constructor(config: CwManageConfig, private readonly transport?: typeof fetch) {
     config = validateConfig(config);
     // Auth: Basic base64("{companyId}+{publicKey}:{privateKey}")
     const credentials = `${config.companyId}+${config.publicKey}:${config.privateKey}`;
@@ -117,7 +117,7 @@ export class CwManageClient {
         fetchOptions.body = JSON.stringify(options.body);
       }
 
-      const response = await fetch(url.toString(), fetchOptions);
+      const response = await (this.transport ?? fetch)(url.toString(), fetchOptions);
 
       if (!response.ok) {
         throw new ApiRequestError(response.status);

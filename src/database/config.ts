@@ -25,7 +25,7 @@ export function databaseConfig(env: Environment): DatabaseConfig {
     if (!/^[a-z][a-z0-9-]+\.postgres\.database\.azure\.com$/.test(host) || port !== 5432 || env.CW_DB_LOCAL_PASSWORD || env.NODE_TLS_REJECT_UNAUTHORIZED === "0")
         throw new Error("invalid_database_configuration");
     const passwordSecret = env.CW_DB_PASSWORD_SECRET;
-    if (!["cw-control-db-password", "cw-migration-db-password"].includes(passwordSecret || ""))
+    if (!["cw-control-db-password", "cw-migration-db-password", "cw-mcp-db-password"].includes(passwordSecret || ""))
         throw new Error("invalid_database_configuration");
     let vault: URL;
     try {

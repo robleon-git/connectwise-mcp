@@ -1,0 +1,141 @@
+name: Reviewed manual MCP delivery
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        type: choice
+        options: [build, prepare-control, promote-control, candidate, accept-candidate, cutover, rollback, cleanup]
+        required: true
+      reviewed_sha:
+        description: Exact reviewed committed source SHA
+        required: true
+        type: string
+      owner_action_approval:
+        description: Codex-approved action:SHA (separate candidate and cutover approvals)
+        required: true
+        type: string
+      evidence_run:
+        description: Successful prior run of this workflow, same source SHA (except build)
+        type: string
+      operator_cidr:
+        description: Approved public operator IPv4/32 for isolated candidate creation
+        type: string
+      linking_client_id:
+        description: Approved nonsecret fixed Descope linking client ID
+        type: string
+      candidate_acceptance:
+        description: Allowlisted boolean acceptance record only; no identifiers or payloads
+        type: string
+      owner_baseline_connected:
+        description: Fresh production ChatGPT cw_test_connection returned connected:true
+        type: boolean
+        default: false
+      baseline_read_tools_verified:
+        description: Fresh authenticated exact 39 reads / 0 writes verification passed
+        type: boolean
+        default: false
+      emergency_pilot_rollback_approved:
+        description: Temporary prelaunch-only pilot recovery limitations explicitly accepted
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: connectwise-production-delivery
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: cw_delivery_test
+          POSTGRES_PASSWORD: phase0-ci-disposable-only
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d cw_delivery_test"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      CW_DATABASE_INTEGRATION: 'true'
+      CW_DB_HOST: 127.0.0.1
+      CW_DB_NAME: cw_delivery_test
+      CW_DB_USER: postgres
+      CW_DB_LOCAL_PASSWORD: phase0-ci-disposable-only
+    steps:
+      - name: Require reviewed workflow source
+        env:
+          REVIEWED_SHA: ${{ inputs.reviewed_sha }}
+        run: test "$REVIEWED_SHA" = "$GITHUB_SHA"
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '26'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run build:ui && npm run build && npm run validate:ticket-card && npm run build:portal
+      - run: npm run lint && npm test && npm audit --omit=dev && npm audit && git diff --check
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: slice3-portal
+          path: portal/dist
+          if-no-files-found: error
+          retention-days: 14
+  deliver:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'robleon-git/connectwise-mcp' &&
+      github.ref == 'refs/heads/phase1-hardening' &&
+      github.actor == 'robleon-git' &&
+      github.triggering_actor == 'robleon-git'
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: connectwise-production
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
+    env:
+      RELEASE_ACTION: ${{ inputs.action }}
+      CW_REVIEWED_SHA: ${{ inputs.reviewed_sha }}
+      CW_OWNER_ACTION_APPROVAL: ${{ inputs.owner_action_approval }}
+      CW_OPERATOR_CIDR: ${{ inputs.operator_cidr }}
+      CW_MCP_LINK_CLIENT_ID: ${{ inputs.linking_client_id }}
+      CW_CANDIDATE_ACCEPTANCE: ${{ inputs.candidate_acceptance }}
+      CW_OWNER_BASELINE_CONNECTED: ${{ inputs.owner_baseline_connected }}
+      CW_BASELINE_READ_TOOLS_VERIFIED: ${{ inputs.baseline_read_tools_verified }}
+      CW_EMERGENCY_PILOT_ROLLBACK_APPROVED: ${{ inputs.emergency_pilot_rollback_approved }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '26'
+      - run: npm ci --ignore-scripts
+      - name: Validate release evidence provenance before download
+        if: inputs.action != 'build'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVIDENCE_RUN: ${{ inputs.evidence_run }}
+        run: node scripts/deploy/mcp-evidence-download.mjs
+      - uses: Azure/login@8216e11d8cd9b42fe925c852af8e76311ff067ac
+        with:
+          client-id: ${{ vars.CW_AZURE_DEPLOY_CLIENT_ID }}
+          tenant-id: ad6bf531-194d-4880-8baa-013ab8eab0e8
+          subscription-id: 08a97e42-1e1f-4f33-95dc-36af13337091
+      - name: Execute only the explicitly approved action
+        run: node scripts/deploy/mcp-release.mjs "$RELEASE_ACTION"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: slice3-mcp-release
+          path: .delivery/mcp-release.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 90

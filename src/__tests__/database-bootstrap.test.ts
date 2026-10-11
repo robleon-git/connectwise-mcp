@@ -1,3 +1,4 @@
+import { bootstrapMcpReader } from "../database/mcp-bootstrap.js";
 import { describe, it, expect, vi } from "vitest";
 import { bootstrapDatabase, bootstrapSettings, BOOTSTRAP_PENDING } from "../database/bootstrap.js";
 // @ts-expect-error Operator script is JavaScript.
@@ -91,5 +92,31 @@ describe("operator-only bootstrap cleanup", () => {
   it("cleanup-only cannot start a new execution; implicit invocation is rejected", async () => {
     const f = operatorFixture(); await operateBootstrap("cleanup", f); expect(f.az.mock.calls.some(c => c[0].includes("start"))).toBe(false);
     await expect(operateBootstrap(undefined, f)).rejects.toThrow("explicit_bootstrap_action_required");
+  });
+});
+
+describe("one-shot MCP reader bootstrap",()=>{
+  it("creates only a constrained cw_mcp login/password and leaves relation grants to migration",async()=>{
+    const f=fixture();expect(await bootstrapMcpReader({connect:f.connect} as never,f.store,f.generate)).toEqual({mcpReaderBootstrapSucceeded:true});
+    expect(f.store.set.mock.calls.map(c=>c[0])).toEqual(["cw-mcp-db-password"]);
+    expect(f.query.mock.calls.map(c=>c[0]).join(" ")).toContain("CREATE ROLE cw_mcp LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS");
+    expect(f.query.mock.calls.map(c=>c[0]).join(" ")).not.toContain("GRANT SELECT");
+  });
+  it("refuses non-placeholder or existing role without rotation and sanitizes errors",async()=>{
+    const f=fixture();f.store.get.mockResolvedValue("synthetic-existing-password");await expect(bootstrapMcpReader({connect:f.connect} as never,f.store)).rejects.toThrow(/^mcp_reader_bootstrap_failed$/);expect(f.store.set).not.toHaveBeenCalled();
+    const g=fixture();g.store.set.mockRejectedValue(new Error("private-key-canary"));await expect(bootstrapMcpReader({connect:g.connect} as never,g.store)).rejects.toThrow(/^mcp_reader_bootstrap_failed$/);
+  });
+  it("renders the same bounded private manual job with a distinct exact purpose",async()=>{
+    const job=bootstrapResource(await configuration(),"monotorrdevacr6689.azurecr.io/connectwise-control-api@sha256:"+"a".repeat(64),"mcp-reader");
+    expect(job.properties.template.containers[0].env).toContainEqual({name:"CW_BOOTSTRAP_CONFIRM",value:"INITIALIZE_CONNECTWISE_MCP_READER"});
+    expect(job.properties.configuration.replicaRetryLimit).toBe(0);expect(job.properties.configuration.replicaTimeout).toBe(180);
+  });
+  it("operator cleanup removes only the two temporary secret-scoped assignments",async()=>{
+    const f=operatorFixture();f.roles.splice(1,2,{...f.roles[1],scope:f.roles[1].scope.replace("cw-control-db-password","cw-mcp-db-password"),id:f.roles[1].id.replace("cw-control-db-password","cw-mcp-db-password")});
+    const original=f.az.getMockImplementation()!;f.az.mockImplementation(async(args:string[])=>{
+      const result=await original(args);if(args.includes("show")&&!args.includes("execution"))return JSON.stringify({...JSON.parse(result),confirm:["INITIALIZE_CONNECTWISE_MCP_READER"]});return result;
+    });
+    expect(await operateBootstrap("run-mcp",f)).toMatchObject({databaseBootstrapSucceeded:true,bootstrapPermissionsRemoved:true,bootstrapJobDeleted:true});
+    expect(f.roles).toHaveLength(0);
   });
 });

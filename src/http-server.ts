@@ -1,10 +1,15 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { CwManageClient } from "./api-client.js";
+import type { CwManageConfig } from "./config.js";
+import { CustomerAccessError } from "./auth/customer-access.js";
+import { withCustomerEvidence, customerAccessOutcome } from "./auth/customer-evidence.js";
+import { customerTransport } from "./auth/customer-transport.js";
 import { createMcpServer } from "./mcp-server.js";
 import { type ConfigProvider, type Environment } from "./config.js";
 import { createConnectWiseConfigLoader } from "./config-loader.js";
 import { ConfigurationError, logDiagnostic, logAuthDiagnostic, logMcpDiagnostic } from "./diagnostics.js";
-import { bearerChallenge, protectedResourceMetadata, type AuthenticationResult, type DescopeMcpConfig } from "./auth/descope-mcp.js";
+import { bearerChallenge, protectedResourceMetadata, type AuthenticationResult, type DescopeResourceConfig, type McpPrincipal } from "./auth/descope-mcp.js";
 
 /** Verify issuer, audience and caller authorization before resolving any CW secrets.
  * Typed denials preserve safe OAuth responses; false/throws remain fail-closed.
@@ -25,15 +30,19 @@ export function createHttpHandler(options: {
   authenticate: McpAuthenticator;
   configProvider?: ConfigProvider;
   allowedOrigins?: readonly string[];
-  authConfig?: DescopeMcpConfig;
+  authConfig?: DescopeResourceConfig;
+  customerConfigProvider?: (principal: McpPrincipal) => Promise<CwManageConfig>;
+  customerClientFactory?: (config: CwManageConfig) => { client: CwManageClient; close(): Promise<void> };
 }) {
-  const configProvider = options.configProvider ?? createConnectWiseConfigLoader();
-  return async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+  const configProvider = options.customerConfigProvider ? undefined : options.configProvider ?? createConnectWiseConfigLoader();
+  const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const reply = (status: number, error: string, challenge?: string) => {
       res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store",
         ...(challenge ? { "WWW-Authenticate": challenge } : {}) });
       res.end(JSON.stringify({ error }));
     };
+    let closeCustomer: (() => Promise<void>) | undefined;
+    res.once("close", () => { void closeCustomer?.().catch(()=>{}); });
     try {
       const path = new URL(req.url || "/", "http://localhost").pathname;
       if (path === "/health") { reply(200, "ok"); return; }
@@ -62,13 +71,31 @@ export function createHttpHandler(options: {
           options.authConfig ? bearerChallenge(options.authConfig, denial?.error) : undefined);
         return;
       }
+      customerAccessOutcome("request_denied");
       if (req.method !== "POST") { reply(405, "method_not_allowed"); return; }
       if (Object.keys(req.headers).some(name => name.startsWith("x-cw-"))) {
         reply(400, "per_request_credentials_disabled"); return;
       }
-      const config = await configProvider();
+      let config: CwManageConfig | null;
+      let requestClient: CwManageClient | undefined;
+      if (options.customerConfigProvider) {
+        if (typeof result !== "object" || !result.authenticated || !result.principal) { reply(403,"access_denied"); return; }
+        if (Object.keys(req.headers).some(name=>["x-account-id","x-connection-id","x-customer-id"].includes(name)) ||
+            new URL(req.url || "/","http://localhost").searchParams.has("accountId")) { reply(400,"invalid_request"); return; }
+        config = await options.customerConfigProvider(result.principal);
+        customerAccessOutcome("authorized");
+        if (!config || config.rejectUnauthorized !== true) throw new CustomerAccessError();
+        const factory = options.customerClientFactory ?? (value=>{
+          const transport = customerTransport(value.baseUrl);
+          return {client:new CwManageClient(value,transport.transport),close:transport.close};
+        });
+        const scoped = factory(config);
+        closeCustomer = scoped.close;
+        requestClient = scoped.client;
+        if (res.destroyed) { await closeCustomer(); return; }
+      } else config = await configProvider!();
       if (config?.rejectUnauthorized === false) throw new ConfigurationError("invalid-config");
-      const server = createMcpServer(config, options.authConfig?.requiredScope);
+      const server = createMcpServer(config, options.authConfig?.requiredScope, requestClient);
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined, enableJsonResponse: true,
       });
@@ -85,8 +112,21 @@ export function createHttpHandler(options: {
       };
       await transport.handleRequest(req, res);
     } catch (error) {
+      await closeCustomer?.().catch(()=>{});
+      if (error instanceof CustomerAccessError) {
+        customerAccessOutcome(error.code);
+        if (!res.headersSent) reply(error.code === "service_unavailable" ? 503 : 403,error.code);
+        return;
+      }
+      customerAccessOutcome("service_unavailable");
       logDiagnostic("transport.failed", error);
       if (!res.headersSent) reply(500, "internal_error");
     }
+  };
+  return (req: IncomingMessage,res: ServerResponse): Promise<void> => {
+    let isMcp: boolean;
+    try {isMcp = new URL(req.url || "/","http://localhost").pathname === "/mcp";}
+    catch {return handle(req,res);} // Keep the existing sanitized malformed-URL error boundary.
+    return options.customerConfigProvider && isMcp ? withCustomerEvidence(req,()=>handle(req,res)) : handle(req,res);
   };
 }

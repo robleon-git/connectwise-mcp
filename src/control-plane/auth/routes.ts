@@ -1,4 +1,4 @@
-import { Router, json } from "express";
+import { Router, json, type Router as RouterType } from "express";
 import { ConnectionError } from "../../connections/errors.js";
 import type { ConnectionService } from "../../connections/service.js";
 import { randomBytes } from "node:crypto";
@@ -15,7 +15,7 @@ export function readCookie(header: string | undefined, name: string) {
   if (found.length !== 1) return undefined;
   return found[0].slice(name.length + 1);
 }
-export function customerRoutes(store: CustomerStore, provider: IdentityProvider, flowKey: Uint8Array, connections?: {service:Pick<ConnectionService,"setup"|"status">;enabled:boolean}) {
+export function customerRoutes(store: CustomerStore, provider: IdentityProvider, flowKey: Uint8Array, connections?: {service:Pick<ConnectionService,"setup"|"status">;enabled:boolean}, ai?: RouterType) {
   if (flowKey.length !== 32) throw new CustomerAuthError();
   const router = Router();
   router.use((req, res, next) => {
@@ -33,6 +33,7 @@ export function customerRoutes(store: CustomerStore, provider: IdentityProvider,
     if (req.method === "POST" && origin !== PORTAL_ORIGIN) { res.status(403).json({ error: "forbidden" }); return; }
     next();
   });
+  if (ai) router.use(ai);
   router.get("/auth/login", async (_req, res) => {
     try {
       const random = () => randomBytes(32).toString("base64url");

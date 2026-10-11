@@ -2,7 +2,8 @@
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { configuration, immutableImage } from "./common.mjs";
-export function bootstrapResource(c, image) {
+export function bootstrapResource(c, image, purpose = "initial") {
+    if (!["initial","mcp-reader"].includes(purpose)) throw new Error("invalid_bootstrap_purpose");
     immutableImage(c, image);
     const { job } = computeResources(c, image, []);
     // Dedicated one-use system identity: never borrow runtime/migrator Vault permissions.
@@ -14,7 +15,7 @@ export function bootstrapResource(c, image) {
         { name: "CW_DB_NAME", value: "connectwise" },
         { name: "CW_DB_USER", value: "cw_bootstrap_admin" },
         { name: "CW_KEY_VAULT_URI", value: "https://cw-mcp-kv.vault.azure.net" },
-        { name: "CW_BOOTSTRAP_CONFIRM", value: "INITIALIZE_CONNECTWISE_DATABASE" },
+        { name: "CW_BOOTSTRAP_CONFIRM", value: purpose === "initial" ? "INITIALIZE_CONNECTWISE_DATABASE" : "INITIALIZE_CONNECTWISE_MCP_READER" },
     ];
     return job;
 }
@@ -33,11 +34,11 @@ export function computeResources(c, image, probes) {
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
     try {
-        if (process.argv.length !== 3)
+        if (process.argv.length !== 3 && !(process.argv.length === 4 && process.argv[3] === "--mcp-reader"))
             throw new Error();
         const c = await configuration();
         const probes = JSON.parse(await readFile("deployment/azure/control-probes.json", "utf8"));
-        const resources = { ...computeResources(c, process.argv[2], probes), bootstrap: bootstrapResource(c, process.argv[2]) };
+        const resources = process.argv[3] === "--mcp-reader" ? {bootstrap:bootstrapResource(c,process.argv[2],"mcp-reader")} : { ...computeResources(c, process.argv[2], probes), bootstrap: bootstrapResource(c, process.argv[2]) };
         await mkdir(".delivery", { recursive: true });
         for (const [name, value] of Object.entries(resources))
             await writeFile(`.delivery/${name}.json`, JSON.stringify(value, null, 2) + "\n");

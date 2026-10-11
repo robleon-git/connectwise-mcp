@@ -162,17 +162,25 @@ export async function openDefaultBrowser(url) {
   });
 }
 
+export function diagnosticMcpTarget(value = PILOT.resourceUri) {
+  const url = new URL(value);
+  if(url.href === PILOT.resourceUri) return url.href;
+  if(url.protocol !== "https:" || url.username || url.password || url.port || url.search || url.hash || url.pathname !== "/mcp" ||
+    !/^connectwise-mcp-slice3-candidate\.[a-z0-9-]+\.eastus\.azurecontainerapps\.io$/.test(url.hostname)) throw failure();
+  return url.href;
+}
 /** Standard SDK handshake only: no tool execution, token output or auth fallback. */
-export async function discoverMcp(token, verified, { fetchImpl = fetch, signal } = {}) {
+export async function discoverMcp(token, verified, { fetchImpl = fetch, signal, mcpUrl } = {}) {
   const facts = { ...verified, mcpInitializeSucceeded: false, toolsListSucceeded: false };
   let stage = "initialize";
   const statuses = new Map();
-  const transport = new StreamableHTTPClientTransport(new URL(PILOT.resourceUri), {
+  const endpoint = diagnosticMcpTarget(mcpUrl);
+  const transport = new StreamableHTTPClientTransport(new URL(endpoint), {
     requestInit: { headers: { Authorization: `Bearer ${token}` }, redirect: "error" },
     reconnectionOptions: { maxRetries: 0, initialReconnectionDelay: 1000, maxReconnectionDelay: 1000, reconnectionDelayGrowFactor: 1 },
     fetch: async (input, options) => {
       const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
-      if (url.href !== PILOT.resourceUri) throw failure();
+      if (url.href !== endpoint) throw failure();
       const message = options?.method === "POST" && typeof options.body === "string" ? JSON.parse(options.body) : undefined;
       const requestStage = message?.method === "notifications/initialized" ? "initialized" :
         message?.method === "tools/list" ? "tools/list" : message?.method === "initialize" ? "initialize" : undefined;
@@ -239,7 +247,8 @@ export function freshLoginParameters(metadata) {
 
 export async function runDiagnostic({ fetchImpl = fetch, openBrowser = openDefaultBrowser,
   onAuthorizationUrl = url => process.stderr.write(`Open this OAuth authorization URL in your browser:\n${url}\n`),
-  keyResolver, env = process.env, callbackTimeoutMs = 300000, freshLogin = false } = {}) {
+  keyResolver, env = process.env, callbackTimeoutMs = 300000, freshLogin = false, mcpUrl } = {}) {
+  diagnosticMcpTarget(mcpUrl);
   checkPilotEnvironment(env);
   const metadata = validateDiscovery(await jsonRequest(fetchImpl, PILOT.issuer + "/.well-known/openid-configuration"));
   const interaction = freshLogin ? freshLoginParameters(metadata) : {};
@@ -281,7 +290,7 @@ export async function runDiagnostic({ fetchImpl = fetch, openBrowser = openDefau
     // Only the access token enters the SDK, in process memory. No token fields escape.
     const verified = await verifyTokenAndFindPaths(tokens.access_token, keyResolver);
     if (!verified.approvedIdMatchPaths.length) return verified;
-    return await discoverMcp(tokens.access_token, verified, { fetchImpl, signal: abort.signal });
+    return await discoverMcp(tokens.access_token, verified, { fetchImpl, signal: abort.signal, mcpUrl });
   } catch { throw failure(); }
   finally {
     process.off("SIGINT", cancel); process.off("SIGTERM", cancel);

@@ -4,13 +4,16 @@ import { migrate, loadMigrations } from "../database/migrationRunner.js";
 import { bootstrapDatabase, BOOTSTRAP_PENDING } from "../database/bootstrap.js";
 import { verifyCustomerDatabase } from "./fixtures/customer-database.js";
 import { verifyConnectionDatabase } from "./fixtures/connection-database.js";
+import { bootstrapMcpReader } from "../database/mcp-bootstrap.js";
+import { verifyMcpDatabase } from "./fixtures/mcp-database.js";
+import { MCP_DATABASE_LIMITS } from "../database/pool.js";
 import { MIGRATIONS } from "../database/migrationManifest.js";
 describe.skipIf(process.env.CW_DATABASE_INTEGRATION !== "true")("real disposable PostgreSQL 18 migrations", () => {
     it("bootstraps a private-job-shaped non-superuser admin, migrates, and rejects runtime administration", async () => {
         if (process.env.CW_DB_HOST !== "127.0.0.1" || process.env.CW_DB_NAME !== "cw_delivery_test") throw new Error("disposable_database_required");
         const local = { host: "127.0.0.1", port: Number(process.env.CW_DB_PORT || "5432"), ssl: false as const };
         const owner = new Pool({ ...local, database: "cw_delivery_test", user: "postgres", password: process.env.CW_DB_LOCAL_PASSWORD });
-        let admin: Pool | undefined, runtime: Pool | undefined, migrator: Pool | undefined;
+        let admin: Pool | undefined, runtime: Pool | undefined, migrator: Pool | undefined, mcp: Pool | undefined;
         try {
             expect((await owner.query("SHOW server_version")).rows[0].server_version).toMatch(/^18\./);
             await owner.query("CREATE ROLE cw_bootstrap_admin LOGIN CREATEROLE NOSUPERUSER PASSWORD 'synthetic-local-bootstrap-only'");
@@ -23,19 +26,34 @@ describe.skipIf(process.env.CW_DATABASE_INTEGRATION !== "true")("real disposable
             const privileges = (await admin.query("SELECT rolname,rolsuper,rolcreaterole,rolcreatedb,rolbypassrls FROM pg_roles WHERE rolname IN ('cw_control','cw_migrator')")).rows;
             for (const role of privileges) expect(role).toMatchObject({ rolsuper: false, rolcreaterole: false, rolcreatedb: false, rolbypassrls: false });
             expect((await admin.query("SELECT pg_has_role('cw_bootstrap_admin','cw_migrator','SET') AS member")).rows[0].member).toBe(false);
+            secrets.set("cw-mcp-db-password",BOOTSTRAP_PENDING);
+            expect(await bootstrapMcpReader(admin,store)).toEqual({mcpReaderBootstrapSucceeded:true});
+            await expect(bootstrapMcpReader(admin,store)).rejects.toThrow("mcp_reader_bootstrap_failed");
             migrator = new Pool({ ...local, database: "connectwise", user: "cw_migrator", password: secrets.get("cw-migration-db-password") });
             const migrations = await loadMigrations(MIGRATIONS, new URL("../../database/migrations/", import.meta.url));
-            expect((await migrate(migrator, migrations)).applied).toBe(3);
+            expect((await migrate(migrator, migrations)).applied).toBe(4);
             runtime = new Pool({ ...local, database: "connectwise", user: "cw_control", password: secrets.get("cw-control-db-password") });
-            expect((await runtime.query("SELECT id FROM public.schema_migrations")).rows).toHaveLength(3);
+            expect((await runtime.query("SELECT id FROM public.schema_migrations")).rows).toHaveLength(4);
             await verifyCustomerDatabase(runtime, migrator);
             await verifyConnectionDatabase(runtime, migrator);
+            mcp = new Pool({...local,...MCP_DATABASE_LIMITS,database:"connectwise",user:"cw_mcp",password:secrets.get("cw-mcp-db-password")});
+            expect((await mcp.query("SHOW statement_timeout")).rows[0].statement_timeout).toBe("5s");
+            expect((await mcp.query("SHOW lock_timeout")).rows[0].lock_timeout).toBe("2s");
+            await expect(mcp.query("SELECT pg_sleep(6)")).rejects.toMatchObject({code:"57014"});
+            expect((await runtime.query("SHOW statement_timeout")).rows[0].statement_timeout).toBe("0");
+            const locker=await migrator.connect();
+            try {
+                await locker.query("BEGIN; LOCK TABLE public.schema_migrations IN ACCESS EXCLUSIVE MODE");
+                await expect(mcp.query("SELECT id FROM public.schema_migrations")).rejects.toMatchObject({code:"55P03"});
+            } finally {await locker.query("ROLLBACK");locker.release();}
+            await verifyMcpDatabase(runtime,mcp,migrator);
+            expect((await mcp.query("SELECT id FROM public.schema_migrations")).rows).toHaveLength(4);
             await expect(runtime.query("DELETE FROM public.schema_migrations")).rejects.toThrow();
             await expect(runtime.query("CREATE TABLE public.forbidden(id int)")).rejects.toThrow();
             await expect(runtime.query("SET ROLE cw_migrator")).rejects.toThrow();
             await expect(migrator.query("CREATE ROLE forbidden_role")).rejects.toThrow();
         } finally {
-            await Promise.all([admin?.end(), runtime?.end(), migrator?.end()]);
+            await Promise.all([admin?.end(), runtime?.end(), migrator?.end(), mcp?.end()]);
             // pool.end() can finish before PostgreSQL has observed every socket close.
             // Wait for backend disconnects; FORCE can emit a late uncaught pool error in CI.
             let remaining = 1;
@@ -46,7 +64,7 @@ describe.skipIf(process.env.CW_DATABASE_INTEGRATION !== "true")("real disposable
             }
             expect(remaining).toBe(0);
             await owner.query("DROP DATABASE IF EXISTS connectwise");
-            await owner.query("DROP ROLE IF EXISTS cw_control,cw_migrator,cw_bootstrap_admin");
+            await owner.query("DROP ROLE IF EXISTS cw_control,cw_migrator,cw_mcp,cw_bootstrap_admin");
             await owner.end();
         }
     }, 30000);
