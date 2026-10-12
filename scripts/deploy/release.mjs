@@ -2,6 +2,7 @@ import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { configuration, az, execute, assertSubscription, immutableImage, featureOnlyDeployment } from "./common.mjs";
 import { assessMcpImpact } from "./mcp-impact.mjs";
+import { controlCondition, requireControlTraffic, readControlTraffic } from "./control-condition.mjs";
 import { smoke } from "./smoke.mjs";
 const manifestPath = ".delivery/control-release.json";
 async function imageAndSource(c, mode) {
@@ -39,35 +40,47 @@ export async function release(action) {
     const current = JSON.parse(await az(["containerapp", "show", ...target, "--query", "{mode:properties.configuration.activeRevisionsMode,revision:properties.latestReadyRevisionName,traffic:properties.configuration.ingress.traffic,fqdn:properties.configuration.ingress.fqdn,image:properties.template.containers[0].image}", "-o", "json"]));
     if (current.mode !== "Multiple")
         throw new Error("control_revision_mode_required");
-    if (action === "prepare") {
+    if (action === "prepare" || action === "prepare-slice3") {
         const built = await imageAndSource(c, "existing");
         immutableImage(c, current.image);
         const previousTags = JSON.parse(await az(["acr", "manifest", "show-metadata", "--registry", c.registry, "--name", current.image.split("/").slice(1).join("/"), "--query", "tags", "-o", "json"]));
-        const previousSha = previousTags.find(tag => /^[a-f0-9]{40}$/.test(tag));
+        const sourceTags = previousTags.filter(tag => /^[a-f0-9]{40}$/.test(tag));
+        const previousSha = sourceTags.length === 1 ? sourceTags[0] : undefined;
         if (!previousSha)
             throw new Error("previous_source_unknown");
+        const condition = action === "prepare-slice3" ? await controlCondition(previousSha, built.sha) : undefined;
+        if (condition) {
+            requireControlTraffic(current.traffic,current.revision);
+            const selected=JSON.parse(await az(["containerapp","revision","show",...target,"--revision",current.revision,"--query","{image:properties.template.containers[0].image,health:properties.healthState}","-o","json"]));
+            if(selected.image!==current.image||selected.health!=="Healthy")throw new Error("control_baseline_unconfirmed");
+            await smoke(`https://${current.fqdn}`,"control-api");
+        }
         await az(["containerapp", "ingress", "traffic", "set", ...target, "--revision-weight", `${current.revision}=100`, "-o", "none"]);
+        if(condition)await readControlTraffic(az,target,current.revision);
         await mkdir(".delivery", { recursive: true });
         // Persist rollback evidence BEFORE changing the candidate or migration job.
-        const manifest = { ...built, previousRevision: current.revision, previousImage: current.image, previousSha, portalArtifactSha: built.sha };
+        const manifest = { ...built, previousRevision: current.revision, previousImage: current.image, previousSha, portalArtifactSha: built.sha, ...(condition ? {condition} : {}) };
         await writeFile(manifestPath, JSON.stringify(manifest) + "\n");
-        await az(["containerapp", "job", "update", "-n", c.migrationJob, "-g", c.resourceGroup, "--image", built.image, "-o", "none"]);
-        const execution = await az(["containerapp", "job", "start", "-n", c.migrationJob, "-g", c.resourceGroup, "--query", "name", "-o", "tsv"]);
-        if (!/^[a-z0-9-]+$/.test(execution))
-            throw new Error("invalid_execution");
-        let migrated = false;
-        for (let i = 0; i < 40; i++) {
-            const status = await az(["containerapp", "job", "execution", "show", "-n", c.migrationJob, "-g", c.resourceGroup, "--job-execution-name", execution, "--query", "properties.status", "-o", "tsv"]);
-            if (status === "Succeeded") {
-                migrated = true;
-                break;
+        let execution;
+        if(condition?.kind!=="control-only") {
+            await az(["containerapp", "job", "update", "-n", c.migrationJob, "-g", c.resourceGroup, "--image", built.image, "-o", "none"]);
+            execution = await az(["containerapp", "job", "start", "-n", c.migrationJob, "-g", c.resourceGroup, "--query", "name", "-o", "tsv"]);
+            if (!/^[a-z0-9-]+$/.test(execution))
+                throw new Error("invalid_execution");
+            let migrated = false;
+            for (let i = 0; i < 40; i++) {
+                const status = await az(["containerapp", "job", "execution", "show", "-n", c.migrationJob, "-g", c.resourceGroup, "--job-execution-name", execution, "--query", "properties.status", "-o", "tsv"]);
+                if (status === "Succeeded") {
+                    migrated = true;
+                    break;
+                }
+                if (status === "Failed")
+                    break;
+                await new Promise(r => setTimeout(r, 3000));
             }
-            if (status === "Failed")
-                break;
-            await new Promise(r => setTimeout(r, 3000));
+            if (!migrated)
+                throw new Error("migration_not_succeeded");
         }
-        if (!migrated)
-            throw new Error("migration_not_succeeded");
         const suffix = `p0-${built.sha.slice(0, 12)}`;
         await az(["containerapp", "update", ...target, "--image", built.image, "--revision-suffix", suffix, ...(c.customerLoginClientId ? ["--set-env-vars", "CW_CONNECTION_SETUP_ENABLED=true", "CW_CUSTOMER_FEATURES_ENABLED=true", `CW_PORTAL_LOGIN_CLIENT_ID=${c.customerLoginClientId}`] : []), "-o", "none"]);
         const revision = `${c.controlApi}--${suffix}`;
@@ -119,6 +132,7 @@ export async function release(action) {
     if (!selected.active)
         await az(["containerapp", "revision", "activate", ...target, "--revision", revision, "-o", "none"]);
     await az(["containerapp", "ingress", "traffic", "set", ...target, "--revision-weight", `${revision}=100`, "-o", "none"]);
+    if(manifest.condition)await readControlTraffic(az,target,revision);
     await smoke(`https://${current.fqdn}`, "control-api");
     await smoke("https://api.monotorr.com", "mcp");
     return { action, revision };

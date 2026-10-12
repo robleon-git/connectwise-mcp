@@ -4,7 +4,7 @@ import { mkdir,readFile,writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { configuration,execute,assertSubscription } from "./common.mjs";
 import { mcpAz, releaseFailure, markReleaseStage, releaseDiagnostic } from "./mcp-release-diagnostics.mjs";
-import { assessMcpImpact } from "./mcp-impact.mjs";
+import { controlCondition, requireControlTraffic, readControlTraffic } from "./control-condition.mjs";
 import { release as controlRelease } from "./release.mjs";
 import { requireManualMcpWorkflow } from "./mcp-evidence-download.mjs";
 import { smoke } from "./smoke.mjs";
@@ -133,28 +133,63 @@ export async function mcpRelease(action,inputs={},dependencies={}) {
   stage="release";
   if(action==="prepare-control") {
     if(!/^[A-Za-z0-9._-]{1,256}$/.test(inputs.linkingClientId||""))throw new Error("fixed_linking_client_required");
-    // Reuse existing immutable build/migration/candidate mechanics, never its guarded promotion.
+    // Invalidate prior control promotion before preparation; preserve MCP acceptance and rollback evidence.
+    state.controlPromoted=false;await save(state);
+    // Compute the Slice 3 condition inside preparation before any live mutation.
     await write(".delivery/built-image.json",JSON.stringify({sha:head,image:state.controlImage})+"\n");
-    await (dependencies.controlRelease||controlRelease)("prepare");
+    await (dependencies.controlRelease||controlRelease)("prepare-slice3");
     const control=JSON.parse(await read(".delivery/control-release.json","utf8"));
     if(control.sha!==head||control.image!==state.controlImage)throw new Error("control_artifact_mismatch");
     const suffix=`s3-link-${head.slice(0,12)}`;
     await call(["containerapp","update","-n",c.controlApi,"-g",c.resourceGroup,"--image",state.controlImage,"--revision-suffix",suffix,"--set-env-vars","CW_MCP_LINKING_ENABLED=true",`CW_MCP_LINK_CLIENT_ID=${inputs.linkingClientId}`,`DESCOPE_MCP_ISSUER=${ISSUER}`,`DESCOPE_MCP_JWKS_URI=${JWKS}`,`MCP_RESOURCE_URI=${c.mcpResource}`,"MCP_REQUIRED_SCOPE=connectwise.read","-o","none"]);
-    state.control={...control,revision:`${c.controlApi}--${suffix}`};await save(state);return {controlPrepared:true};
+    const preparedRevision=`${c.controlApi}--${suffix}`;
+    let prepared;
+    for(let i=0;i<30;i++){
+      prepared=JSON.parse(await call(["containerapp","revision","show","-n",c.controlApi,"-g",c.resourceGroup,"--revision",preparedRevision,"--query","{health:properties.healthState,image:properties.template.containers[0].image,active:properties.active,fqdn:properties.fqdn}","-o","json"]));
+      if(prepared.image!==state.controlImage)throw new Error("control_candidate_image_mismatch");
+      if(prepared.health==="Healthy"&&prepared.active===true)break;
+      await new Promise(resolve=>setTimeout(resolve,2000));
+    }
+    if(prepared?.health!=="Healthy"||prepared.active!==true||!prepared.fqdn)throw new Error("control_candidate_not_ready");
+    await (dependencies.smoke||smoke)(`https://${prepared.fqdn}`,"control-api");
+    state.control={...control,revision:preparedRevision};state.controlPromoted=false;
+    await save(state);return {controlPrepared:true};
   }
   if(action==="promote-control") {
     if(!state.control||state.control.sha!==head||state.control.image!==state.controlImage||!/^connectwise-control-api--s3-link-[a-f0-9]{12}$/.test(state.control.revision||""))throw new Error("control_candidate_missing");
-    const impact=await (dependencies.assessMcpImpact||assessMcpImpact)(state.control.previousSha,head);
-    if(impact.impact!=="changed")throw new Error("explicit_mcp_impact_review_required");
-    const selected=JSON.parse(await call(["containerapp","revision","show","-n",c.controlApi,"-g",c.resourceGroup,"--revision",state.control.revision,"--query","{health:properties.healthState,image:properties.template.containers[0].image,active:properties.active}","-o","json"]));
-    if(selected.health!=="Healthy"||selected.image!==state.controlImage||selected.active!==true)throw new Error("control_candidate_not_ready");
-    await call(["containerapp","revision","label","add","-n",c.controlApi,"-g",c.resourceGroup,"--revision",state.control.revision,"--label","candidate","--yes","-o","none"]);
-    const runtime=JSON.parse(await call(["containerapp","show","-n",c.controlApi,"-g",c.resourceGroup,"--query","{mode:properties.configuration.activeRevisionsMode,fqdn:properties.configuration.ingress.fqdn}","-o","json"]));
+    const condition=await controlCondition(state.control.previousSha,head,dependencies);
+    if(condition.kind==="control-only"&&canonicalJson(condition)!==canonicalJson(state.control.condition))throw new Error("control_only_evidence_mismatch");
+    if(state.control.condition&&canonicalJson(condition)!==canonicalJson(state.control.condition))throw new Error("control_condition_changed");
+    const selected=JSON.parse(await call(["containerapp","revision","show","-n",c.controlApi,"-g",c.resourceGroup,"--revision",state.control.revision,"--query","{health:properties.healthState,image:properties.template.containers[0].image,active:properties.active,fqdn:properties.fqdn}","-o","json"]));
+    if(selected.health!=="Healthy"||selected.image!==state.controlImage||selected.active!==true||!selected.fqdn)throw new Error("control_candidate_not_ready");
+    const target=["-n",c.controlApi,"-g",c.resourceGroup];
+    const previous=JSON.parse(await call(["containerapp","revision","show",...target,"--revision",state.control.previousRevision,"--query","{health:properties.healthState,image:properties.template.containers[0].image,active:properties.active}","-o","json"]));
+    if(previous.health!=="Healthy"||previous.image!==state.control.previousImage||previous.active!==true)throw new Error("control_rollback_not_ready");
+    const runtime=JSON.parse(await call(["containerapp","show","-n",c.controlApi,"-g",c.resourceGroup,"--query","{mode:properties.configuration.activeRevisionsMode,fqdn:properties.configuration.ingress.fqdn,traffic:properties.configuration.ingress.traffic}","-o","json"]));
     if(runtime.mode!=="Multiple")throw new Error("control_revision_mode_required");
+    requireControlTraffic(runtime.traffic,state.control.previousRevision);
     const fqdn=runtime.fqdn;
+    await (dependencies.smoke||smoke)(`https://${fqdn}`,"control-api");
+    await (dependencies.smoke||smoke)(`https://${selected.fqdn}`,"control-api");
+    // Pin the old revision before moving a label that might currently carry traffic.
+    await call(["containerapp","ingress","traffic","set",...target,"--revision-weight",`${state.control.previousRevision}=100`,"-o","none"]);
+    await readControlTraffic(call,target,state.control.previousRevision);
+    await call(["containerapp","revision","label","add",...target,"--revision",state.control.revision,"--label","candidate","--yes","-o","none"]);
     await (dependencies.smoke||smoke)(`https://${c.controlApi}---candidate.${fqdn.split(".").slice(1).join(".")}`,"control-api");
-    await call(["containerapp","ingress","traffic","set","-n",c.controlApi,"-g",c.resourceGroup,"--revision-weight",`${state.control.revision}=100`,"-o","none"]);
-    await (dependencies.smoke||smoke)(`https://${fqdn}`,"control-api");await publicSmoke();state.controlPromoted=true;await save(state);return {controlPromoted:true};
+    try {
+      await call(["containerapp","ingress","traffic","set",...target,"--revision-weight",`${state.control.revision}=100`,"-o","none"]);
+      await readControlTraffic(call,target,state.control.revision);
+      await (dependencies.smoke||smoke)(`https://${fqdn}`,"control-api");await publicSmoke();
+      state.controlPromoted=true;await save(state);
+    } catch(error) {
+      state.controlPromoted=false;
+      // Restore only the preverified rollback revision, including on an ambiguous timeout.
+      await call(["containerapp","ingress","traffic","set",...target,"--revision-weight",`${state.control.previousRevision}=100`,"-o","none"]);
+      await readControlTraffic(call,target,state.control.previousRevision);
+      await (dependencies.smoke||smoke)(`https://${fqdn}`,"control-api");
+      throw error;
+    }
+    return {controlPromoted:true};
   }
   if(action==="candidate") {
     stage="candidate_payload";

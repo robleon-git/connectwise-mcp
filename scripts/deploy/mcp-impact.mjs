@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { execute } from './common.mjs';
 import { readFile, readdir } from 'node:fs/promises';
 import { resolve, relative, dirname } from 'node:path';
@@ -63,7 +64,9 @@ export function compareMcpSnapshots(before,after) {
       if(protectedPath(path)&&before[path]!==after[path])return {impact:'changed',changedOutputs:[path]};
     const oldOutput=mcpOutputs(before),newOutput=mcpOutputs(after);
     const changedOutputs=[...new Set([...Object.keys(oldOutput),...Object.keys(newOutput)])].filter(path=>oldOutput[path]!==newOutput[path]).sort();
-    return {impact:changedOutputs.length?'changed':'unchanged',changedOutputs,reachableModuleCount:Object.keys(newOutput).length};
+    const moduleNames=Object.keys(newOutput).sort(), previousModuleNames=Object.keys(oldOutput).sort();
+    const fingerprint=output=>createHash('sha256').update(JSON.stringify(Object.entries(output).sort(([a],[b])=>a<b?-1:a>b?1:0))).digest('hex');
+    return {impact:changedOutputs.length?'changed':'unchanged',changedOutputs,reachableModuleCount:moduleNames.length,moduleNames,previousModuleNames,protectedInputsEqual:true,outputFingerprint:fingerprint(newOutput),previousOutputFingerprint:fingerprint(oldOutput)};
   }catch{return {impact:'unknown',changedOutputs:[]};}
 }
 async function snapshot(ref) {

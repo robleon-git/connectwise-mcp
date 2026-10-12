@@ -5,7 +5,7 @@ export async function smoke(origin, kind, fetcher = fetch) {
         throw new Error("invalid_smoke_target");
     if (kind === "mcp" && url.origin !== "https://api.monotorr.com")
         throw new Error("invalid_smoke_target");
-    if (kind === "control-api" && !/^connectwise-control-api(?:---[a-z0-9-]+)?\.[a-z0-9-]+\.eastus\.azurecontainerapps\.io$/.test(url.hostname))
+    if (kind === "control-api" && !/^connectwise-control-api(?:(?:---|--)[a-z0-9-]+)?\.[a-z0-9-]+\.eastus\.azurecontainerapps\.io$/.test(url.hostname))
         throw new Error("invalid_smoke_target");
     if (kind === "portal" && url.origin !== "https://portal.monotorr.com" && !/^[a-z0-9-]+\.[a-z0-9-]+\.azurestaticapps\.net$/.test(url.hostname))
         throw new Error("invalid_smoke_target");

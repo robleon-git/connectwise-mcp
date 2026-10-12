@@ -38,6 +38,85 @@ function productionArm(patch:Record<string,unknown>={}) {
 function dependencies(){return {configuration:async()=>c,assertSubscription:vi.fn(),az,execute,readFile:async()=>JSON.stringify(state),writeFile:write,mkdir:vi.fn(),smoke};}
 function input(action:string,extra={}){return {reviewedSha:sha,approval:`${action}:${sha}`,...extra};}
 function mutations(){return az.mock.calls.map(c=>c[0] as string[]).filter(args=>args.includes("update")||args.includes("create")||args.includes("put")||args.includes("copy")||args.includes("delete")||args.includes("set"));}
+const moduleNames=Array.from({length:39},(_,i)=>`dist/module-${i}.js`);
+const unchangedImpact={impact:"unchanged",changedOutputs:[],reachableModuleCount:39,moduleNames,previousModuleNames:moduleNames,protectedInputsEqual:true,outputFingerprint:digest,previousOutputFingerprint:digest};
+const schema={migrationCount:4,migrationFingerprint:oldDigest};
+function controlState(){
+ const revision="connectwise-control-api--s3-link-"+sha.slice(0,12),previousRevision="connectwise-control-api--prior";
+ const condition={kind:"control-only",previousSha:oldSha,sha,moduleCount:39,moduleFingerprint:digest,protectedInputsEqual:true,...schema};
+ Object.assign(state,{controlPromoted:false,control:{sha,image:controlImage,previousImage:controlImage,previousSha:oldSha,previousRevision,revision,condition}});
+ let traffic=[{revisionName:previousRevision,weight:100}];
+ const original=az.getMockImplementation()!;
+ az.mockImplementation(async args=>{
+  if(args.includes(c.controlApi)){
+   if(args.includes("traffic")&&args.includes("set")){traffic=[{revisionName:args[args.indexOf("--revision-weight")+1].split("=")[0],weight:100}];return "";}
+   if(args.includes("revision")&&args.includes("show"))return JSON.stringify({health:"Healthy",active:true,image:controlImage,fqdn:"connectwise-control-api--candidate.domain.eastus.azurecontainerapps.io"});
+   if(args.includes("show"))return args.some(a=>a==="properties.configuration.ingress.traffic")?JSON.stringify(traffic):JSON.stringify({mode:"Multiple",fqdn:"connectwise-control-api.domain.eastus.azurecontainerapps.io",traffic});
+  }
+  return original(args);
+ });
+ return {revision,previousRevision};
+}
+function controlDependencies(){return {...dependencies(),assessMcpImpact:async()=>unchangedImpact,schemaCompatibility:async()=>schema};}
+describe("computed Slice 3 control-only promotion",()=>{
+ it.each(["candidate","cutover"])("control-only approval cannot authorize MCP %s",async action=>{
+  controlState();await expect(mcpRelease(action,input("promote-control"),controlDependencies())).rejects.toThrow("explicit_owner_action_approval_required");expect(mutations()).toHaveLength(0);
+ });
+ it("promotes unchanged 39-module MCP proof without altering acceptance or either MCP application",async()=>{
+  const {revision}=controlState(),accepted=structuredClone(state.acceptance),baseline=structuredClone(state.baseline),candidate=structuredClone(state.candidate);
+  await expect(mcpRelease("promote-control",input("promote-control"),controlDependencies())).resolves.toMatchObject({controlPromoted:true});
+  const saved=JSON.parse(write.mock.calls.at(-1)![1]);expect(saved.acceptance).toEqual(accepted);expect(saved.baseline).toEqual(baseline);expect(saved.candidate).toEqual(candidate);
+  expect(mutations().every(args=>args.includes(c.controlApi)&&!args.includes(MCP_TARGET)&&!args.includes(MCP_CANDIDATE))).toBe(true);
+  expect(mutations().at(-1)).toContain(`${revision}=100`);
+ });
+ it.each(["changed","unknown"])("%s inputs cannot use recorded control-only evidence",async impact=>{
+  controlState();await expect(mcpRelease("promote-control",input("promote-control"),{...controlDependencies(),assessMcpImpact:async()=>({impact})})).rejects.toThrow();expect(mutations()).toHaveLength(0);
+ });
+ it("preparation preserves MCP evidence and invalidates stale control promotion on failure",async()=>{
+  controlState();state.controlPromoted=true;const accepted=structuredClone(state.acceptance);
+  const prepare=vi.fn(async(action:string)=>{expect(action).toBe("prepare-slice3");throw new Error("compatibility failed");});
+  await expect(mcpRelease("prepare-control",input("prepare-control",{linkingClientId:"approved-public-client"}),{...dependencies(),controlRelease:prepare})).rejects.toThrow("compatibility failed");
+  const saved=JSON.parse(write.mock.calls[0][1]);expect(saved.controlPromoted).toBe(false);expect(saved.acceptance).toEqual(accepted);expect(saved.candidate).toEqual(state.candidate);expect(saved.baseline).toEqual(state.baseline);expect(mutations()).toHaveLength(0);
+ });
+ it("changed schema stops before mutations",async()=>{
+  controlState();await expect(mcpRelease("promote-control",input("promote-control"),{...controlDependencies(),schemaCompatibility:async()=>({...schema,migrationCount:5})})).rejects.toThrow("control_only_evidence_mismatch");expect(mutations()).toHaveLength(0);
+ });
+ it("missing preparation proof and wrong candidate readiness fail before traffic mutation",async()=>{
+  controlState();delete (state as unknown as {control:{condition?:object}}).control.condition;
+  await expect(mcpRelease("promote-control",input("promote-control"),controlDependencies())).rejects.toThrow("control_only_evidence_mismatch");expect(mutations()).toHaveLength(0);
+  controlState();let checks=0;smoke.mockImplementation(async()=>{if(++checks===2)throw new Error("candidate not ready");return {smokePassed:true};});
+  await expect(mcpRelease("promote-control",input("promote-control"),controlDependencies())).rejects.toThrow("candidate not ready");expect(mutations()).toHaveLength(0);
+ });
+ it("ambiguous promoted traffic triggers verified rollback",async()=>{
+  const {previousRevision,revision}=controlState();const original=az.getMockImplementation()!;let newTraffic=false;
+  az.mockImplementation(async args=>{
+   if(args.includes("traffic")&&args.includes("set"))newTraffic=args.includes(`${revision}=100`);
+   if(newTraffic&&args.includes("properties.configuration.ingress.traffic"))return JSON.stringify([{latestRevision:true,weight:100}]);
+   return original(args);
+  });
+  await expect(mcpRelease("promote-control",input("promote-control"),controlDependencies())).rejects.toThrow("control_traffic_unconfirmed");expect(mutations().at(-1)).toContain(`${previousRevision}=100`);expect(write).not.toHaveBeenCalled();
+ });
+ it("failed rollback fails closed without marking promotion complete",async()=>{
+  const {previousRevision,revision}=controlState();const original=az.getMockImplementation()!;let attempted=false;
+  az.mockImplementation(async args=>{if(args.includes(`${revision}=100`)){attempted=true;throw new Error("promotion timeout");}if(attempted&&args.includes(`${previousRevision}=100`))throw new Error("rollback failed");return original(args);});
+  await expect(mcpRelease("promote-control",input("promote-control"),controlDependencies())).rejects.toThrow("rollback failed");expect(write).not.toHaveBeenCalled();
+ });
+ it("retains the changed-impact MCP-affecting lane",async()=>{
+  controlState();Object.assign(state,{control:{...(state as unknown as {control:object}).control,condition:{kind:"mcp-affecting",previousSha:oldSha,sha}}});
+  await expect(mcpRelease("promote-control",input("promote-control"),{...dependencies(),assessMcpImpact:async()=>({impact:"changed"})})).resolves.toMatchObject({controlPromoted:true});
+ });
+ it("ambiguous initial traffic fails before mutation",async()=>{
+  controlState();const original=az.getMockImplementation()!;az.mockImplementation(async args=>args.includes(c.controlApi)&&args.includes("show")&&!args.includes("revision")?JSON.stringify({mode:"Multiple",fqdn:"control.invalid",traffic:[{latestRevision:true,weight:100}]}):original(args));
+  await expect(mcpRelease("promote-control",input("promote-control"),controlDependencies())).rejects.toThrow("control_traffic_unconfirmed");expect(mutations()).toHaveLength(0);
+ });
+ it("failed post-promotion smoke restores the recorded prior revision and does not mark promotion complete",async()=>{
+  const {previousRevision}=controlState();smoke.mockRejectedValueOnce(new Error("current not ready"));
+  await expect(mcpRelease("promote-control",input("promote-control"),controlDependencies())).rejects.toThrow();expect(mutations()).toHaveLength(0);
+  smoke.mockReset();let checks=0;smoke.mockImplementation(async()=>{if(++checks===4)throw new Error("new failed");return {smokePassed:true};});
+  await expect(mcpRelease("promote-control",input("promote-control"),controlDependencies())).rejects.toThrow("new failed");
+  expect(mutations().at(-1)).toContain(`${previousRevision}=100`);expect(write).not.toHaveBeenCalled();
+ });
+});
 describe("explicit MCP delivery boundaries",()=>{
  it("requires clean committed exact reviewed source before any Azure call",async()=>{
   await expect(mcpRelease("candidate",input("candidate",{reviewedSha:oldSha}),dependencies())).rejects.toThrow("reviewed_source_mismatch");expect(az).not.toHaveBeenCalled();
@@ -58,7 +137,7 @@ describe("explicit MCP delivery boundaries",()=>{
  });
  it.each(["unknown","unchanged"])("separate control promotion rejects %s MCP impact",async impact=>{
   const previousImage=controlImage;Object.assign(state,{control:{sha,image:controlImage,previousImage,previousSha:oldSha,revision:"connectwise-control-api--s3-link-"+sha.slice(0,12)}});
-  await expect(mcpRelease("promote-control",input("promote-control"),{...dependencies(),assessMcpImpact:async()=>({impact})})).rejects.toThrow("explicit_mcp_impact_review_required");expect(mutations()).toHaveLength(0);
+  await expect(mcpRelease("promote-control",input("promote-control"),{...dependencies(),assessMcpImpact:async()=>({impact})})).rejects.toThrow("control_only_impact_unproven");expect(mutations()).toHaveLength(0);
  });
  it("requires exact action-bound owner approval, not a bypass flag",async()=>{
   await expect(mcpRelease("cutover",{reviewedSha:sha,approval:`candidate:${sha}`},dependencies())).rejects.toThrow("explicit_owner_action_approval_required");expect(az).not.toHaveBeenCalled();

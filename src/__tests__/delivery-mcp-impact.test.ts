@@ -10,6 +10,12 @@ function fixture() {
   'src/connections/service.ts':'export const service = "control-only";'};
 }
 describe('executable MCP closure comparison',()=>{
+ it('proves equality of all 39 executable module names, contents and protected inputs',()=>{
+  const before:Record<string,string>=fixture();before['src/index.ts']=Array.from({length:38},(_,i)=>`export {v${i}} from "./module-${i}.js";`).join('\n');
+  for(let i=0;i<38;i++)before[`src/module-${i}.ts`]=`export const v${i}=${i};`;
+  const proof=compareMcpSnapshots(before,{...before,'src/connections/service.ts':'export const changed=true;'});
+  expect(proof).toMatchObject({impact:'unchanged',reachableModuleCount:39,protectedInputsEqual:true,changedOutputs:[]});expect(proof.moduleNames).toHaveLength(39);expect(proof.previousModuleNames).toEqual(proof.moduleNames);expect(proof.previousOutputFingerprint).toBe(proof.outputFingerprint);
+ });
  it('does not classify unreachable control/account/connection modules as deployed MCP code',()=>{
   const before=fixture(),after={...before,'src/connections/service.ts':'export const service = "changed control";','src/control-plane/index.ts':'export const control = "changed";'};
   expect(compareMcpSnapshots(before,after)).toMatchObject({impact:'unchanged',changedOutputs:[]});
