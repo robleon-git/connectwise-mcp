@@ -1,7 +1,7 @@
 import {beforeEach,describe,expect,it,vi} from "vitest";
 import {readFile} from "node:fs/promises";
 // @ts-expect-error Delivery script has no declarations.
-import {mcpRelease,canonicalJson,semanticProjection,configurationFingerprint,FINGERPRINT_VERSION,BASELINE_API_VERSION,mcpImage,candidateResource,preservedConfiguration,mcpEnvironment,acceptance,ACCEPTANCE_KEYS,operatorCidr,MCP_TARGET,MCP_CANDIDATE} from "../../scripts/deploy/mcp-release.mjs";
+import {mcpRelease,canonicalJson,semanticProjection,configurationFingerprint,FINGERPRINT_VERSION,BASELINE_API_VERSION,READINESS_TIMEOUT_MS,READINESS_INTERVAL_MS,revisionTemplateFingerprint,mcpImage,candidateResource,preservedConfiguration,mcpEnvironment,acceptance,ACCEPTANCE_KEYS,operatorCidr,MCP_TARGET,MCP_CANDIDATE} from "../../scripts/deploy/mcp-release.mjs";
 // @ts-expect-error Delivery script has no declarations.
 import {validateEvidenceRun,requireManualMcpWorkflow,downloadEvidence} from "../../scripts/deploy/mcp-evidence-download.mjs";
 // @ts-expect-error Operator script has no declarations.
@@ -24,6 +24,9 @@ beforeEach(()=>{
  state={fingerprintVersion:FINGERPRINT_VERSION,sha,mcpImage:image,controlImage,baseline:{...before},controlPromoted:true,candidate:{name:MCP_CANDIDATE,operatorCidr:"8.8.8.8/32"},acceptance:{...Object.fromEntries(ACCEPTANCE_KEYS.map((k:string)=>[k,true])),revision:MCP_CANDIDATE+"--candidate",image}};
  az=vi.fn(async(args:string[])=>{
   if(productionRead(args))return productionArm();
+  const selected=revisionRead(args);
+  if(selected)return revisionArm(selected);
+  if(args.some(a=>a.endsWith(`/containerApps/${MCP_TARGET}/revisions?api-version=${BASELINE_API_VERSION}`)))return JSON.stringify({value:[]});
   if(args.includes(MCP_CANDIDATE)&&args.includes("show"))return args.includes("revision")?"Healthy":JSON.stringify({mode:"Single",image,health:"Succeeded",revision:MCP_CANDIDATE+"--candidate",latest:MCP_CANDIDATE+"--candidate",env:mcpEnvironment(c),restrictions:[{ipAddressRange:"8.8.8.8/32",action:"Allow"}],domains:[]});
   if(args[0]==="resource")return "0";if(args[0]==="role")return "[]";return "";
  });
@@ -33,7 +36,16 @@ function productionRead(args:string[]) {return args[0]==="rest"&&args.includes("
 function productionArm(patch:Record<string,unknown>={}) {
  const v={...before,template,ingress,identity:undefined,...patch};
  return JSON.stringify({identity:v.identity,properties:{latestReadyRevisionName:v.revision,
-   configuration:{activeRevisionsMode:v.mode,ingress:v.ingress},template:{...v.template,containers:v.template.containers.map(c=>({...c,image:v.image}))}}});
+   latestRevisionName:(patch.latest as string)||v.revision,configuration:{activeRevisionsMode:v.mode,ingress:v.ingress},template:{...v.template,containers:v.template.containers.map(c=>({...c,image:v.image}))}}});
+}
+function revisionRead(args:string[]) {
+ const url=args.find(a=>a.includes(`/containerApps/${MCP_TARGET}/revisions/`));
+ return url?.split("/revisions/")[1].split("?")[0];
+}
+function revisionArm(name:string,patch:Record<string,unknown>={}) {
+ const selectedImage=name.includes("--s3-")&&!name.includes("--s3-recovery-")?image:oldImage;
+ return JSON.stringify({name,properties:{active:true,healthState:"Healthy",provisioningState:"Provisioned",runningState:"RunningAtMaxScale",
+  template:{...template,containers:template.containers.map(c=>({...c,image:selectedImage}))},...patch}});
 }
 function dependencies(){return {configuration:async()=>c,assertSubscription:vi.fn(),az,execute,readFile:async()=>JSON.stringify(state),writeFile:write,mkdir:vi.fn(),smoke};}
 function input(action:string,extra={}){return {reviewedSha:sha,approval:`${action}:${sha}`,...extra};}
@@ -185,7 +197,7 @@ describe("explicit MCP delivery boundaries",()=>{
  it("refuses to confirm cutover if protected probes or ingress changed",async()=>{
   let changed=false;const original=az.getMockImplementation()!;
   az.mockImplementation(async args=>{if(args.includes("update")){changed=true;return "";}if(changed&&productionRead(args))return productionArm({image,revision:MCP_TARGET+"--s3-"+sha.slice(0,12),template:{...template,containers:[{...template.containers[0],probes:[{type:"Readiness"}]}]}});return original(args);});
-  await expect(mcpRelease("cutover",input("cutover",{ownerBaselineConnected:true,baselineReadToolsVerified:true,emergencyPilotRollbackApproved:true}),dependencies())).rejects.toThrow("cutover_not_confirmed");
+  await expect(mcpRelease("cutover",input("cutover",{ownerBaselineConnected:true,baselineReadToolsVerified:true,emergencyPilotRollbackApproved:true}),dependencies())).rejects.toThrow("unexpected_runtime_stop_for_operator_review");
   expect(mutations()).toHaveLength(1);expect(JSON.parse(write.mock.calls[0][1]).cutoverStarted).toBe(true);
  });
  it("retains evidence on uncertain cutover failure and does not automatically retry or roll back",async()=>{
@@ -194,8 +206,8 @@ describe("explicit MCP delivery boundaries",()=>{
  });
  it("rollback copies only the recorded pilot revision/image, never deletes customer data",async()=>{
   state.cutoverStarted=true;let restored=false;const original=az.getMockImplementation()!;
-  az.mockImplementation(async args=>{if(args.includes("copy")){restored=true;return "";}if(!restored&&productionRead(args))return productionArm({image,revision:MCP_TARGET+"--s3-"+sha.slice(0,12)});return original(args);});
-  await expect(mcpRelease("rollback",input("rollback",{emergencyPilotRollbackApproved:true}),dependencies())).resolves.toMatchObject({temporaryPrelaunchPilotRecovery:true});expect(mutations()).toEqual([expect.arrayContaining(["revision","copy","--from-revision",before.revision,"--image",oldImage])]);
+  az.mockImplementation(async args=>{if(args.includes("copy")){restored=true;return "";}if(productionRead(args))return productionArm(restored?{revision:MCP_TARGET+"--s3-recovery-"+sha.slice(0,12)}:{image,revision:MCP_TARGET+"--s3-"+sha.slice(0,12)});return original(args);});
+  await expect(mcpRelease("rollback",input("rollback",{emergencyPilotRollbackApproved:true}),dependencies())).resolves.toMatchObject({temporaryPrelaunchPilotRecovery:true});expect(mutations()).toEqual([expect.arrayContaining(["revision","copy","--from-revision",before.revision])]);expect(mutations()[0]).not.toContain("--image");expect(mutations()[0]).not.toContain(oldImage);
   expect(az.mock.calls.some(c=>c[0].includes("job")||c[0].includes("keyvault")||c[0].includes("traffic"))).toBe(false);
  });
  it("cleanup refuses to delete a candidate before its separate role cleanup",async()=>{
@@ -335,5 +347,140 @@ describe("sanitized MCP candidate failure stages",()=>{
  it("retains sanitized Azure authorization category at ARM PUT",async()=>{
   const original=az.getMockImplementation()!;az.mockImplementation(async args=>{if(args.includes("put"))throw releaseFailure("authorization_failed");return original(args);});
   expect(await diagnosticFailure()).toEqual({mcpReleaseSucceeded:false,stage:"candidate_arm_put",category:"authorization_failed"});
+ });
+});
+
+
+describe("bounded exact MCP cutover and recovery readiness",()=>{
+ const flags={ownerBaselineConnected:true,baselineReadToolsVerified:true,emergencyPilotRollbackApproved:true};
+ const cutoverRevision=MCP_TARGET+"--s3-"+sha.slice(0,12),recoveryRevision=MCP_TARGET+"--s3-recovery-"+sha.slice(0,12);
+ function sequence(action:"cutover"|"rollback",states:Record<string,unknown>[],options:{ready?:string;latest?:string;sourceImage?:string;existingRecovery?:boolean;restoredEnv?:boolean;defaults?:boolean}={}){
+  if(action==="rollback")state.cutoverStarted=true;
+  let changed=false,time=0,index=0,selected:Record<string,unknown>={};
+  const original=az.getMockImplementation()!,expected=action==="cutover"?cutoverRevision:recoveryRevision;
+  az.mockImplementation(async args=>{
+   if(args.includes("update")||args.includes("copy")){changed=true;return "";}
+   const name=revisionRead(args);
+   if(name===before.revision)return revisionArm(name,{template:{...template,containers:[{...template.containers[0],image:options.sourceImage??oldImage}]}});
+   if(args.some(a=>a.endsWith(`/containerApps/${MCP_TARGET}/revisions?api-version=${BASELINE_API_VERSION}`)))return JSON.stringify({value:options.existingRecovery?[{name:recoveryRevision}]:[]});
+   if(changed&&name===expected){selected=states[Math.min(index++,states.length-1)];return revisionArm(expected,selected);}
+   if(productionRead(args)){
+    if(!changed)return action==="rollback"?productionArm({image,revision:before.revision,latest:cutoverRevision}):productionArm();
+    const healthy=selected.healthState!=="None";
+    const patch={revision:options.ready??(healthy?expected:before.revision),latest:options.latest??expected,image:action==="cutover"?image:oldImage};
+    const output=JSON.parse(productionArm(patch));
+    if(options.restoredEnv===false)output.properties.template.containers[0].env=[{name:"WRONG",value:"SECRET-CANARY"}];
+    if(options.defaults){output.properties.template.customMetricsSettings=null;output.properties.template.containers[0].imageType="ContainerImage";output.properties.configuration.ingress.targetPortHttpScheme=null;}
+    return JSON.stringify(output);
+   }
+   return original(args);
+  });
+  const pause=vi.fn(async(ms:number)=>{time+=ms;});
+  return {...dependencies(),pause,now:()=>time};
+ }
+ const activating={healthState:"None",runningState:"Activating"};
+ it.each(["cutover","rollback"] as const)("%s waits through Activating and old latestReady",async action=>{
+  const deps=sequence(action,[activating,activating,{}]);
+  await expect(mcpRelease(action,input(action,flags),deps)).resolves.toMatchObject(action==="cutover"?{cutoverConfirmed:true}:{temporaryPrelaunchPilotRecovery:true});
+  expect(deps.pause).toHaveBeenCalledTimes(2);expect(deps.pause.mock.calls.every(c=>c[0]===READINESS_INTERVAL_MS)).toBe(true);
+  expect(JSON.stringify(write.mock.calls)).not.toContain("DO-NOT-PERSIST-SECRET");
+ });
+ it.each(["cutover","rollback"] as const)("%s terminal failure exposes only allowlisted category",async action=>{
+  const deps=sequence(action,[{...activating,runningState:"Failed",raw:"SECRET-CANARY"}]);
+  const error=await mcpRelease(action,input(action,flags),deps).catch((e:unknown)=>e);
+  expect(releaseDiagnostic(error)).toEqual({mcpReleaseSucceeded:false,stage:`${action}_readiness`,category:`${action}_revision_failed`});
+  expect(deps.pause).not.toHaveBeenCalled();expect(JSON.stringify(write.mock.calls)).not.toContain("cutoverConfirmed");
+  expect(JSON.stringify(releaseDiagnostic(error))).not.toContain("SECRET-CANARY");
+ });
+ it.each(["cutover","rollback"] as const)("%s hard timeout retains only started evidence",async action=>{
+  const deps=sequence(action,[activating]);
+  const error=await mcpRelease(action,input(action,flags),deps).catch((e:unknown)=>e);
+  expect(releaseDiagnostic(error)).toEqual({mcpReleaseSucceeded:false,stage:`${action}_readiness`,category:`${action}_readiness_timeout`});
+  expect(deps.pause).toHaveBeenCalledTimes(READINESS_TIMEOUT_MS/READINESS_INTERVAL_MS);
+  if(action==="cutover")expect(JSON.parse(write.mock.calls[0][1]).cutoverStarted).toBe(true);
+  expect(write.mock.calls.some(c=>JSON.parse(c[1]).cutoverConfirmed||JSON.parse(c[1]).emergencyPilotRecovery)).toBe(false);
+ });
+ it("includes Azure read latency in the hard deadline",async()=>{
+  const deps=sequence("cutover",[{}]);let time=0;
+  deps.now=()=>{time+=READINESS_TIMEOUT_MS;return time;};
+  const error=await mcpRelease("cutover",input("cutover",flags),deps).catch((e:unknown)=>e);
+  expect(releaseDiagnostic(error).category).toBe("cutover_readiness_timeout");
+ });
+ it("times out an in-flight read without exposing its eventual response",async()=>{
+  vi.useFakeTimers();try{
+   const deps=sequence("cutover",[{}]);const original=az.getMockImplementation()!;
+   az.mockImplementation(async args=>revisionRead(args)===cutoverRevision?new Promise<string>(()=>{}):original(args));
+   const promise=mcpRelease("cutover",input("cutover",flags),deps).catch((e:unknown)=>e);
+   await vi.advanceTimersByTimeAsync(READINESS_TIMEOUT_MS);
+   expect(releaseDiagnostic(await promise).category).toBe("cutover_readiness_timeout");
+  }finally{vi.useRealTimers();}
+ });
+ it("wrong expected-revision image fails immediately",async()=>{
+  const deps=sequence("cutover",[{template:{...template,containers:[{image:oldImage}]}}]);
+  await expect(mcpRelease("cutover",input("cutover",flags),deps)).rejects.toThrow("revision_image_mismatch");expect(deps.pause).not.toHaveBeenCalled();
+ });
+ it("a wrong revision returned for the exact GET fails closed",async()=>{
+  const deps=sequence("cutover",[{}]);const original=az.getMockImplementation()!;
+  az.mockImplementation(async args=>revisionRead(args)===cutoverRevision?JSON.stringify({name:"unrelated",properties:{template}}):original(args));
+  await expect(mcpRelease("cutover",input("cutover",flags),deps)).rejects.toThrow();
+ });
+ it.each([{ready:MCP_TARGET+"--unrelated"},{latest:MCP_TARGET+"--unrelated"}])("unrelated ready/latest revision never satisfies confirmation: %j",async options=>{
+  const deps=sequence("cutover",[{}],options);await expect(mcpRelease("cutover",input("cutover",flags),deps)).rejects.toThrow("unexpected_runtime");
+ });
+ it("Healthy alone is insufficient while latestReady is old",async()=>{
+  const deps=sequence("cutover",[{}],{ready:before.revision});
+  const error=await mcpRelease("cutover",input("cutover",flags),deps).catch((e:unknown)=>e);expect(releaseDiagnostic(error).category).toBe("cutover_readiness_timeout");
+ });
+ it.each([{active:false},{runningState:"Unknown"},{provisioningState:"Unknown"}])("ambiguous active/runtime state cannot confirm: %j",async patch=>{
+  const deps=sequence("cutover",[patch]);const error=await mcpRelease("cutover",input("cutover",flags),deps).catch((e:unknown)=>e);expect(releaseDiagnostic(error).category).toBe("cutover_readiness_timeout");
+ });
+ it("an explicitly pinned old traffic revision is not accepted",async()=>{
+  const deps=sequence("cutover",[{}]);const original=az.getMockImplementation()!;let updated=false;
+  az.mockImplementation(async args=>{if(args.includes("update"))updated=true;const response=await original(args);if(updated&&productionRead(args)){const app=JSON.parse(response);app.properties.configuration.ingress.traffic=[{revisionName:before.revision,weight:100}];return JSON.stringify(app);}return response;});
+  await expect(mcpRelease("cutover",input("cutover",flags),deps)).rejects.toThrow();
+ });
+ it("retained historical image is verified before any copy",async()=>{
+  const deps=sequence("rollback",[{}],{sourceImage:image});await expect(mcpRelease("rollback",input("rollback",flags),deps)).rejects.toThrow("retained_revision_changed");expect(mutations()).toHaveLength(0);
+ });
+ it("missing historical revision fails before copying",async()=>{
+  const deps=sequence("rollback",[{}]);const original=az.getMockImplementation()!;
+  az.mockImplementation(async args=>revisionRead(args)===before.revision?Promise.reject(new Error("SECRET-CANARY")):original(args));
+  await expect(mcpRelease("rollback",input("rollback",flags),deps)).rejects.toThrow();expect(mutations()).toHaveLength(0);
+ });
+ it("existing recovery suffix is never overwritten",async()=>{
+  const deps=sequence("rollback",[{}],{existingRecovery:true});await expect(mcpRelease("rollback",input("rollback",flags),deps)).rejects.toThrow("recovery_revision_already_exists");expect(mutations()).toHaveLength(0);
+ });
+ it.each([{value:[{}]},{value:[],nextLink:"another-page"}])("ambiguous recovery absence evidence prevents copying: %j",async payload=>{
+  const deps=sequence("rollback",[{}]);const original=az.getMockImplementation()!;
+  az.mockImplementation(async args=>args.some(a=>a.endsWith(`/containerApps/${MCP_TARGET}/revisions?api-version=${BASELINE_API_VERSION}`))?JSON.stringify(payload):original(args));
+  await expect(mcpRelease("rollback",input("rollback",flags),deps)).rejects.toThrow("recovery_revision_already_exists");expect(mutations()).toHaveLength(0);
+ });
+ it("failed-startup rollback does not require the Slice 3 revision latestReady",async()=>{
+  const deps=sequence("rollback",[activating,{}]);await expect(mcpRelease("rollback",input("rollback",flags),deps)).resolves.toMatchObject({temporaryPrelaunchPilotRecovery:true});
+  expect(mutations()[0]).toContain(before.revision);expect(mutations()[0]).not.toContain("--image");
+ });
+ it("known canonical-semantic-v1 defaults and suffix change restore successfully",async()=>{
+  const defaults={...template,revisionSuffix:"recovery",customMetricsSettings:null,containers:[{...template.containers[0],imageType:"ContainerImage"}]};
+  const deps=sequence("rollback",[{template:defaults}],{defaults:true});
+  await expect(mcpRelease("rollback",input("rollback",flags),deps)).resolves.toMatchObject({temporaryPrelaunchPilotRecovery:true});
+  expect(revisionTemplateFingerprint(defaults)).toBe(revisionTemplateFingerprint(template));
+ });
+ it.each([
+  {template:{...template,containers:[{...template.containers[0],env:[{name:"WRONG",value:"SECRET-CANARY"}]}]}},
+  {template:{...template,containers:[{...template.containers[0],command:["different"]}]}},
+  {template:{...template,unknown:true}}
+ ])("material historical template difference fails: %j",async patch=>{
+  const deps=sequence("rollback",[patch]);await expect(mcpRelease("rollback",input("rollback",flags),deps)).rejects.toThrow("historical_configuration_not_restored");expect(write).not.toHaveBeenCalled();
+ });
+ it("an overlaid app environment fails even if recovery revision is correct",async()=>{
+  const deps=sequence("rollback",[{}],{restoredEnv:false});await expect(mcpRelease("rollback",input("rollback",flags),deps)).rejects.toThrow("historical_configuration_not_restored");
+ });
+ it("unrelated production state cannot authorize copying",async()=>{
+  const deps=sequence("rollback",[{}]);const original=az.getMockImplementation()!;
+  az.mockImplementation(async args=>productionRead(args)?productionArm({image,revision:MCP_TARGET+"--unrelated"}):original(args));
+  await expect(mcpRelease("rollback",input("rollback",flags),deps)).rejects.toThrow("unexpected_runtime");expect(mutations()).toHaveLength(0);
+ });
+ it.each([false,undefined])("rollback still requires explicit emergency approval: %s",async approved=>{
+  const deps=sequence("rollback",[{}]);await expect(mcpRelease("rollback",input("rollback",{emergencyPilotRollbackApproved:approved}),deps)).rejects.toThrow("temporary_prelaunch_rollback_approval_required");expect(mutations()).toHaveLength(0);
  });
 });

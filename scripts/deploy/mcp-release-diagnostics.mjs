@@ -1,7 +1,7 @@
 // MCP delivery only: retain categorical evidence, never raw command failure data.
 import { execute } from "./common.mjs";
-const stages = new Set(["release", "baseline", "candidate_existence_check", "candidate_payload", "candidate_arm_put", "candidate_evidence"]);
-const categories = new Set(["baseline_changed", "authorization_failed", "invalid_payload", "resource_conflict", "referenced_resource_error", "unknown"]);
+const stages = new Set(["release", "baseline", "candidate_existence_check", "candidate_payload", "candidate_arm_put", "candidate_evidence", "cutover_readiness", "rollback_readiness"]);
+const categories = new Set(["baseline_changed", "authorization_failed", "invalid_payload", "resource_conflict", "referenced_resource_error", "unknown", "cutover_readiness_timeout", "cutover_revision_failed", "rollback_readiness_timeout", "rollback_revision_failed"]);
 const evidence = new WeakMap();
 export function releaseFailure(category, message = "azure_operation_failed") {
   const error = new Error(message);

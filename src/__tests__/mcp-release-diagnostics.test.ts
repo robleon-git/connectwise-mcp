@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 // @ts-expect-error Delivery script has no declarations.
-import { azureFailureCategory, mcpAz, releaseDiagnostic, markReleaseStage } from "../../scripts/deploy/mcp-release-diagnostics.mjs";
+import { azureFailureCategory, mcpAz, releaseDiagnostic, releaseFailure, markReleaseStage } from "../../scripts/deploy/mcp-release-diagnostics.mjs";
 const canary = "SECRET-CANARY-Authorization-cookie-token-password-code";
 describe("MCP-only safe Azure failure categories", () => {
   it.each([
@@ -37,5 +37,17 @@ describe("MCP-only safe Azure failure categories", () => {
     expect(result.status).toBe(1); expect(result.stdout).toBe("");
     expect(JSON.parse(result.stderr.trim())).toEqual({ mcpReleaseSucceeded: false, stage: "release", category: "unknown" });
     expect(result.stderr).not.toContain(canary);
+  });
+});
+
+
+describe("bounded production readiness diagnostics",()=>{
+  it.each(["cutover","rollback"])("%s readiness categories never serialize foreign data",action=>{
+    for(const suffix of ["readiness_timeout","revision_failed"]){
+      const error=Object.assign(releaseFailure(`${action}_${suffix}`,canary),{body:canary,headers:canary,response:canary});
+      const record=releaseDiagnostic(markReleaseStage(error,`${action}_readiness`));
+      expect(record).toEqual({mcpReleaseSucceeded:false,stage:`${action}_readiness`,category:`${action}_${suffix}`});
+      expect(JSON.stringify(record)).not.toContain(canary);
+    }
   });
 });

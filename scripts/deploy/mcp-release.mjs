@@ -1,5 +1,6 @@
 // Explicit MCP-affecting delivery only. The control-only release/impact guard is unchanged.
 import { createHash } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import { mkdir,readFile,writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { configuration,execute,assertSubscription } from "./common.mjs";
@@ -15,6 +16,14 @@ export const MCP_CANDIDATE = "connectwise-mcp-slice3-candidate";
 export const ISSUER = "https://api.descope.com/v1/apps/agentic/P3KF3ouEKxhaIJBilPItOXL8i76g/RS3KF4WZS6MDxjAyDFqsBTcDQC7au";
 export const JWKS = "https://api.descope.com/P3KF3ouEKxhaIJBilPItOXL8i76g/.well-known/jwks.json";
 export const ACCEPTANCE_KEYS = ["ownerLinked","customerOneConnected","secondCustomerSetupDenied","unknownPrincipalZeroCalls","invalidEntitlementZeroCalls","malformedReferencesNoCalls","crossAccountDenied","concurrencyIsolated","exactReadTools","schemasUnchanged","noPilotFallback","sanitizedEvidence"];
+export const READINESS_TIMEOUT_MS = 600000;
+export const READINESS_INTERVAL_MS = 5000;
+// Revision suffix is the deliberately new identity, not historical runtime configuration.
+export function revisionTemplateFingerprint(template) {
+  const projected=semanticProjection({template}).template;
+  delete projected.revisionSuffix;
+  return fingerprint(projected);
+}
 const shaPattern=/^[a-f0-9]{40}$/;
 export function mcpImage(c,image) {if(typeof image!=="string"||!new RegExp(`^${c.registry}\\.azurecr\\.io/connectwise-mcp@sha256:[a-f0-9]{64}$`).test(image))throw releaseFailure("invalid_payload","invalid_mcp_image");return image;}
 function controlImage(c,image) {if(typeof image!=="string"||!new RegExp(`^${c.registry}\\.azurecr\\.io/connectwise-control-api@sha256:[a-f0-9]{64}$`).test(image))throw new Error("invalid_control_image");return image;}
@@ -88,9 +97,15 @@ export async function mcpRelease(action,inputs={},dependencies={}) {
   const confirm=()=>{if(inputs.approval!==`${action}:${head}`)throw new Error("explicit_owner_action_approval_required");};confirm();
   await (dependencies.assertSubscription||assertSubscription)(c);
   const target=["-n",MCP_TARGET,"-g",c.sharedResourceGroup];
-  const current=async()=>{
-    const resourceId=`/subscriptions/${c.subscriptionId}/resourceGroups/${c.sharedResourceGroup}/providers/Microsoft.App/containerApps/${MCP_TARGET}`;
-    const arm=JSON.parse(await call(["rest","--method","get","--url",`${resourceId}?api-version=${BASELINE_API_VERSION}`,"-o","json"]));
+  const resourceId=`/subscriptions/${c.subscriptionId}/resourceGroups/${c.sharedResourceGroup}/providers/Microsoft.App/containerApps/${MCP_TARGET}`;
+  const readArm=async(path="")=>JSON.parse(await call(["rest","--method","get","--url",`${resourceId}${path}?api-version=${BASELINE_API_VERSION}`,"-o","json"]));
+  const revision=async name=>{
+    if(!/^connectwise-mcp-pilot--[a-z0-9-]+$/.test(name))throw releaseFailure("invalid_payload");
+    const selected=await readArm(`/revisions/${name}`);
+    if(selected.name!==name||!selected.properties?.template?.containers?.length)throw releaseFailure("invalid_payload");
+    return selected;
+  };
+  const fromArm=arm=>{
     const properties=arm.properties;
     const raw={fingerprintVersion:FINGERPRINT_VERSION,revision:properties?.latestReadyRevisionName,
       mode:properties?.configuration?.activeRevisionsMode,traffic:properties?.configuration?.ingress?.traffic,
@@ -100,6 +115,38 @@ export async function mcpRelease(action,inputs={},dependencies={}) {
     raw.configFingerprint=configurationFingerprint(raw);
     raw.preservedFingerprint=preservedConfiguration(raw);
     return baseline(c,raw);
+  };
+  const current=async()=>fromArm(await readArm());
+  const waitReady=async(expected,image,retainedTemplate)=>{
+    const now=dependencies.now||(()=>performance.now());
+    const pause=dependencies.pause||(ms=>new Promise(resolve=>setTimeout(resolve,ms)));
+    const deadline=now()+READINESS_TIMEOUT_MS;
+    const timeout=()=>releaseFailure(`${action}_readiness_timeout`);
+    // Includes read latency; an Azure read cannot extend the hard deadline.
+    const bounded=async operation=>{
+      const remaining=deadline-now();if(remaining<=0)throw timeout();
+      let timer;
+      try{return await Promise.race([operation(),new Promise((_,reject)=>{timer=setTimeout(()=>reject(timeout()),remaining);})]);}
+      finally{clearTimeout(timer);}
+    };
+    while(now()<deadline){
+      const selected=await bounded(()=>revision(expected));const p=selected.properties;
+      if(p.template.containers.length!==1||p.template.containers[0].image!==image)throw releaseFailure("invalid_payload","revision_image_mismatch");
+      if([p.provisioningState,p.runningState,p.healthState].some(v=>["Failed","ProvisioningFailed","Degraded"].includes(v)))throw releaseFailure(`${action}_revision_failed`);
+      const arm=await bounded(()=>readArm());const live=arm.properties;const actual=fromArm(arm);
+      if(live.latestRevisionName!==expected||actual.image!==image||actual.mode!=="Single"||actual.preservedFingerprint!==state.baseline.preservedFingerprint||
+         ![state.baseline.revision,`${MCP_TARGET}--s3-${head.slice(0,12)}`,expected].includes(live.latestReadyRevisionName))throw releaseFailure("baseline_changed","unexpected_runtime_stop_for_operator_review");
+      if(retainedTemplate&&(revisionTemplateFingerprint(p.template)!==revisionTemplateFingerprint(retainedTemplate)||
+         canonicalJson(live.template.containers.map(c=>c.env))!==canonicalJson(retainedTemplate.containers.map(c=>c.env))))throw releaseFailure("baseline_changed","historical_configuration_not_restored");
+      if(p.active===true&&p.healthState==="Healthy"&&["Provisioned","Succeeded"].includes(p.provisioningState)&&
+         ["Running","RunningAtMaxScale","RunningAtMinScale"].includes(p.runningState)&&live.latestReadyRevisionName===expected){
+        if(now()>=deadline)throw timeout();
+        if(!(actual.traffic[0].latestRevision===true||actual.traffic[0].revisionName===expected))throw releaseFailure("baseline_changed","effective_revision_mismatch");
+        return actual;
+      }
+      await bounded(()=>pause(READINESS_INTERVAL_MS));
+    }
+    throw timeout();
   };
   const save=async state=>{await (dependencies.mkdir||mkdir)(".delivery",{recursive:true});await write(".delivery/mcp-release.json",JSON.stringify(state)+"\n");};
   const load=async()=>{
@@ -226,15 +273,25 @@ export async function mcpRelease(action,inputs={},dependencies={}) {
     if(await candidateReady()!==state.acceptance.revision)throw new Error("accepted_candidate_changed");
     await publicSmoke();state.cutoverStarted=true;await save(state); // Retain rollback baseline BEFORE mutation.
     await call(["containerapp","update",...target,"--image",state.mcpImage,"--revision-suffix",`s3-${head.slice(0,12)}`,"--set-env-vars",...mcpEnvironment(c).map(e=>`${e.name}=${e.value}`),"--remove-env-vars","CW_CONFIG_SOURCE","CW_MANAGE_URL","CW_MANAGE_COMPANY_ID","CW_MANAGE_CLIENT_ID","CW_MANAGE_PUBLIC_KEY","CW_MANAGE_PRIVATE_KEY","MCP_APPROVED_USER_ID","MCP_APPROVED_USER_CLAIM","-o","none"]);
-    const actual=await current();if(actual.image!==state.mcpImage||actual.revision!==`${MCP_TARGET}--s3-${head.slice(0,12)}`||actual.preservedFingerprint!==state.baseline.preservedFingerprint)throw new Error("cutover_not_confirmed_use_retained_rollback");
+    stage="cutover_readiness";
+    await waitReady(`${MCP_TARGET}--s3-${head.slice(0,12)}`,state.mcpImage);
     await publicSmoke();state.cutoverConfirmed=true;await save(state);return {cutoverConfirmed:true,ownerLiveAcceptanceStillRequired:true};
   }
   if(action==="rollback") {
     if(inputs.emergencyPilotRollbackApproved!==true||!state.cutoverStarted)throw new Error("temporary_prelaunch_rollback_approval_required");
-    const actual=await current();
-    if(actual.image!==state.mcpImage||actual.revision!==`${MCP_TARGET}--s3-${head.slice(0,12)}`)throw new Error("unexpected_runtime_stop_for_operator_review");
-    await call(["containerapp","revision","copy",...target,"--from-revision",state.baseline.revision,"--image",state.baseline.image,"--revision-suffix",`s3-recovery-${head.slice(0,12)}`,"-o","none"]);
-    const restored=await current();if(restored.image!==state.baseline.image||restored.mode!=="Single"||restored.preservedFingerprint!==state.baseline.preservedFingerprint)throw new Error("rollback_not_confirmed");
+    const expected=`${MCP_TARGET}--s3-${head.slice(0,12)}`,recovery=`${MCP_TARGET}--s3-recovery-${head.slice(0,12)}`;
+    // latestReady may still be the historical source after a failed startup.
+    const arm=await readArm(),actual=fromArm(arm);
+    if(arm.properties.latestRevisionName!==expected||actual.image!==state.mcpImage||actual.preservedFingerprint!==state.baseline.preservedFingerprint||
+       ![state.baseline.revision,expected].includes(arm.properties.latestReadyRevisionName))throw releaseFailure("baseline_changed","unexpected_runtime_stop_for_operator_review");
+    const source=await revision(state.baseline.revision);
+    if(source.properties.template.containers.length!==1||source.properties.template.containers[0].image!==state.baseline.image)throw releaseFailure("baseline_changed","retained_revision_changed");
+    const revisions=await readArm("/revisions");
+    if(!Array.isArray(revisions.value)||revisions.nextLink||revisions.value.some(r=>!r||!/^connectwise-mcp-pilot--[a-z0-9-]+$/.test(r.name||"")||r.name===recovery))throw releaseFailure("resource_conflict","recovery_revision_already_exists");
+    // No --image: the installed CLI otherwise overlays the current containers.
+    await call(["containerapp","revision","copy",...target,"--from-revision",state.baseline.revision,"--revision-suffix",`s3-recovery-${head.slice(0,12)}`,"-o","none"]);
+    stage="rollback_readiness";
+    await waitReady(recovery,state.baseline.image,source.properties.template);
     await publicSmoke();state.emergencyPilotRecovery=true;await save(state);return {temporaryPrelaunchPilotRecovery:true};
   }
   if(action==="cleanup") {
