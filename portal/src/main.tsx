@@ -6,7 +6,8 @@ import { ConnectionForm } from "./ConnectionForm";
 const API = "https://api.monotorr.com/connectwise/v1";
 export interface Status {
   account: { id: string; name: string | null };
-  entitlement: { allowed: boolean; source: string | null; status: string; expiresAt: string | null };
+  entitlement: { allowed: boolean; status: "active" | "expired" | "inactive"; accessKind: "trial" | "standard" | null;
+    trial: { status: "active" | "expired" | "inactive"; startsAt: string; expiresAt: string } | null };
   connectwise: { status: "not_configured" | "connected"; setupAvailable?: boolean; host?: string; companyId?: string };
 }
 export function PortalContent({ status, loading, error, setup, onRetry, onSetup, onConnected, onLogout }: {
@@ -35,8 +36,8 @@ export function PortalContent({ status, loading, error, setup, onRetry, onSetup,
         </section>
         <section aria-labelledby="account-heading"><h2 id="account-heading">Account</h2>
           {status.account.name && <p>{status.account.name}</p>}
-          <p className="status">{allowed ? status.entitlement.source === "trial" ? "Trial active" : "Access active" : expired ? "Access expired" : "Access not active"}</p>
-          {status.entitlement.source === "trial" && status.entitlement.expiresAt && <p>Trial expiration: <time dateTime={status.entitlement.expiresAt}>{new Date(status.entitlement.expiresAt).toLocaleString()}</time></p>}
+          <p className="status">{allowed ? status.entitlement.accessKind === "trial" ? "Trial active" : "Access active" : expired ? "Access expired" : "Access not active"}</p>
+          {status.entitlement.trial && <p>Trial expiration: <time dateTime={status.entitlement.trial.expiresAt}>{new Date(status.entitlement.trial.expiresAt).toLocaleString()}</time></p>}
           <button type="button" className="secondary" onClick={onLogout}>Log out</button>
         </section>
       </> : <section><h2>Your account</h2><p>Sign in with your Microsoft business account to get started.</p>

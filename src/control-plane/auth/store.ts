@@ -1,16 +1,11 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { Pool } from "pg";
+import { ENTITLEMENT_COLUMNS_SQL, evaluateEntitlements, type EntitlementRow } from "../../entitlements/service.js";
 import { CustomerAuthError, type MicrosoftIdentity, UUID } from "./identity.js";
 export const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
 export const SESSION_SECONDS = 24 * 60 * 60;
 export const FLOW_SECONDS = 10 * 60;
 export interface CustomerContext { userId: string; accountId: string; name: string | null }
-export interface Trial { source: "trial"; status: string; startsAt: Date; endsAt: Date }
-export function evaluateTrial(trial: Trial | null, now = new Date()) {
-  const allow = !!trial && trial.status === "active" && trial.startsAt.getTime() <= now.getTime() && trial.endsAt.getTime() > now.getTime();
-  return { allowed: allow, source: trial?.source ?? null, status: allow ? "active" : trial?.status === "active" ? "expired" : trial?.status ?? "absent",
-    expiresAt: trial?.endsAt.toISOString() ?? null };
-}
 export class CustomerStore {
   constructor(private readonly pool: Pool) {}
   async login(identity: MicrosoftIdentity): Promise<{ token: string; context: CustomerContext }> {
@@ -54,13 +49,13 @@ export class CustomerStore {
   }
   async status(context: CustomerContext) {
     // Re-resolve ownership even if a caller accidentally supplies a foreign context.
-    const r = await this.pool.query<{ source: "trial"; status: string; starts_at: Date; ends_at: Date; evaluated_at: Date }>(`SELECT e.source,e.status,e.starts_at,e.ends_at,now() AS evaluated_at FROM public.entitlements e
-      JOIN public.account_memberships m ON m.account_id=e.account_id JOIN public.accounts a ON a.id=m.account_id
-      JOIN public.users u ON u.id=m.user_id WHERE e.account_id=$1 AND m.user_id=$2 AND m.role='owner'
-      AND u.status='active' AND a.status='active' AND e.source='trial'`, [context.accountId, context.userId]);
-    if (r.rows.length !== 1) throw new CustomerAuthError();
-    const t = r.rows[0];
-    return { account: { id: context.accountId, name: context.name }, entitlement: evaluateTrial({ source: t.source, status: t.status, startsAt: t.starts_at, endsAt: t.ends_at }, t.evaluated_at),
+    const r = await this.pool.query<EntitlementRow>(`SELECT ${ENTITLEMENT_COLUMNS_SQL} FROM public.accounts a
+      JOIN public.account_memberships m ON m.account_id=a.id JOIN public.users u ON u.id=m.user_id
+      LEFT JOIN public.entitlements e ON e.account_id=a.id
+      WHERE a.id=$1 AND m.user_id=$2 AND m.role='owner' AND u.status='active' AND a.status='active'`,
+      [context.accountId, context.userId]);
+    if (r.rows.length === 0) throw new CustomerAuthError();
+    return { account: { id: context.accountId, name: context.name }, entitlement: evaluateEntitlements(r.rows),
       connectwise: { status: "not_configured" }, nextAction: "connect_connectwise" };
   }
   async logout(token: string | undefined) {

@@ -5,6 +5,7 @@ import { bootstrapDatabase, BOOTSTRAP_PENDING } from "../database/bootstrap.js";
 import { verifyCustomerDatabase } from "./fixtures/customer-database.js";
 import { verifyConnectionDatabase } from "./fixtures/connection-database.js";
 import { bootstrapMcpReader } from "../database/mcp-bootstrap.js";
+import { verifyEntitlementDatabase } from "./fixtures/entitlement-database.js";
 import { verifyMcpDatabase } from "./fixtures/mcp-database.js";
 import { MCP_DATABASE_LIMITS } from "../database/pool.js";
 import { MIGRATIONS } from "../database/migrationManifest.js";
@@ -31,10 +32,11 @@ describe.skipIf(process.env.CW_DATABASE_INTEGRATION !== "true")("real disposable
             await expect(bootstrapMcpReader(admin,store)).rejects.toThrow("mcp_reader_bootstrap_failed");
             migrator = new Pool({ ...local, database: "connectwise", user: "cw_migrator", password: secrets.get("cw-migration-db-password") });
             const migrations = await loadMigrations(MIGRATIONS, new URL("../../database/migrations/", import.meta.url));
-            expect((await migrate(migrator, migrations)).applied).toBe(4);
+            expect((await migrate(migrator, migrations.slice(0,4))).applied).toBe(4);
             runtime = new Pool({ ...local, database: "connectwise", user: "cw_control", password: secrets.get("cw-control-db-password") });
             expect((await runtime.query("SELECT id FROM public.schema_migrations")).rows).toHaveLength(4);
             await verifyCustomerDatabase(runtime, migrator);
+            await verifyEntitlementDatabase(runtime,migrator,migrations);
             await verifyConnectionDatabase(runtime, migrator);
             mcp = new Pool({...local,...MCP_DATABASE_LIMITS,database:"connectwise",user:"cw_mcp",password:secrets.get("cw-mcp-db-password")});
             expect((await mcp.query("SHOW statement_timeout")).rows[0].statement_timeout).toBe("5s");
@@ -47,7 +49,7 @@ describe.skipIf(process.env.CW_DATABASE_INTEGRATION !== "true")("real disposable
                 await expect(mcp.query("SELECT id FROM public.schema_migrations")).rejects.toMatchObject({code:"55P03"});
             } finally {await locker.query("ROLLBACK");locker.release();}
             await verifyMcpDatabase(runtime,mcp,migrator);
-            expect((await mcp.query("SELECT id FROM public.schema_migrations")).rows).toHaveLength(4);
+            expect((await mcp.query("SELECT id FROM public.schema_migrations")).rows).toHaveLength(5);
             await expect(runtime.query("DELETE FROM public.schema_migrations")).rejects.toThrow();
             await expect(runtime.query("CREATE TABLE public.forbidden(id int)")).rejects.toThrow();
             await expect(runtime.query("SET ROLE cw_migrator")).rejects.toThrow();

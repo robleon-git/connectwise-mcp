@@ -1,5 +1,5 @@
 import type { Pool } from "pg";
-import { evaluateTrial } from "../control-plane/auth/store.js";
+import { ACCOUNT_ENTITLEMENTS_SQL, evaluateEntitlements, type EntitlementRow } from "../entitlements/service.js";
 import { UUID } from "../control-plane/auth/identity.js";
 import { validMcpPrincipal, type McpPrincipal } from "./descope-mcp.js";
 import { normalizeTarget } from "../security/outbound-target.js";
@@ -27,11 +27,8 @@ export class AccountAccessStore implements CustomerAccessStore {
         WHERE x.issuer=$1 AND x.subject=$2 AND u.status='active' AND a.status='active' AND m.role='owner'`, [principal.issuer,principal.subject]);
       if (identity.rows.length !== 1 || !UUID.test(identity.rows[0].user_id) || !UUID.test(identity.rows[0].account_id)) throw new CustomerAccessError();
       const { user_id: userId, account_id: accountId } = identity.rows[0];
-      const entitlement = await this.pool.query<{ source: "trial"; status: string; starts_at: Date; ends_at: Date; evaluated_at: Date }>(
-        "SELECT source,status,starts_at,ends_at,clock_timestamp() AS evaluated_at FROM public.entitlements WHERE account_id=$1 AND source='trial'",[accountId]);
-      if (entitlement.rows.length !== 1) throw new CustomerAccessError();
-      const e = entitlement.rows[0];
-      if (!evaluateTrial({source:e.source,status:e.status,startsAt:e.starts_at,endsAt:e.ends_at},e.evaluated_at).allowed) throw new CustomerAccessError();
+      const entitlement = await this.pool.query<EntitlementRow>(ACCOUNT_ENTITLEMENTS_SQL,[accountId]);
+      if (!evaluateEntitlements(entitlement.rows).allowed) throw new CustomerAccessError();
       const connections = await this.pool.query<{ id: string; server_url: string; company_id: string; public_secret_ref: string; private_secret_ref: string }>(
         "SELECT id,server_url,company_id,public_secret_ref,private_secret_ref FROM public.connectwise_connections WHERE account_id=$1 AND status='connected'",[accountId]);
       if (connections.rows.length !== 1) throw new CustomerAccessError("setup_required");

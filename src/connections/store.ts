@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import type { CustomerContext } from "../control-plane/auth/store.js";
+import { VALID_ENTITLEMENT_SQL } from "../entitlements/service.js";
 import { ConnectionError } from "./errors.js";
 export interface Reservation { id:string; accountId:string; baseUrl:string; companyId:string }
 const ownership = `JOIN public.account_memberships m ON m.account_id=a.id JOIN public.users u ON u.id=m.user_id
   WHERE a.id=$1 AND u.id=$2 AND m.role='owner' AND a.status='active' AND u.status='active'`;
-const eligible = `SELECT a.id FROM public.accounts a ${ownership} AND EXISTS(SELECT 1 FROM public.entitlements e WHERE e.account_id=a.id AND e.source='trial'
-  AND e.status='active' AND e.starts_at<=clock_timestamp() AND e.ends_at>clock_timestamp())`;
+const eligible = `SELECT a.id FROM public.accounts a ${ownership} AND EXISTS(SELECT 1 FROM public.entitlements e WHERE e.account_id=a.id AND ${VALID_ENTITLEMENT_SQL})`;
 export class ConnectionStore {
   constructor(private readonly pool:Pool) {}
   async status(context:CustomerContext) {

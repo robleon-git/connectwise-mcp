@@ -34,6 +34,13 @@ export async function verifyMcpDatabase(control:Pool,mcp:Pool,migrator:Pool) {
   read.mockClear();await migrator.query("UPDATE public.entitlements SET status='suspended' WHERE account_id=$1",[a.context.accountId]);
   await expect(provider(pa)).rejects.toThrow("access_denied");expect(read).not.toHaveBeenCalled();expect((await provider(pb)).baseUrl).toBe(configs[1].baseUrl);
   await migrator.query("UPDATE public.entitlements SET status='active' WHERE account_id=$1",[a.context.accountId]);
+  for(const source of ["web_paid","comp","substack"]){
+    await migrator.query("UPDATE public.entitlements SET status='suspended' WHERE account_id=$1",[a.context.accountId]);
+    const grantId=randomUUID();await control.query("INSERT INTO public.entitlements(id,account_id,source,status,starts_at,ends_at) VALUES($1,$2,$3,'active',now(),NULL)",[grantId,a.context.accountId,source]);
+    expect((await provider(pa)).baseUrl).toBe(configs[0].baseUrl);
+    await migrator.query("DELETE FROM public.entitlements WHERE id=$1",[grantId]);
+  }
+  await migrator.query("UPDATE public.entitlements SET status='active' WHERE account_id=$1",[a.context.accountId]);
   await migrator.query("DELETE FROM public.connectwise_connections WHERE account_id=$1",[a.context.accountId]);read.mockClear();
   await expect(provider(pa)).rejects.toThrow("setup_required");expect(read).not.toHaveBeenCalled();expect((await provider(pb)).baseUrl).toBe(configs[1].baseUrl);
   await customers.logout(a.token);await expect(links.link(a.context,a.token,pa)).rejects.toThrow();

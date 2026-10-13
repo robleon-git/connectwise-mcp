@@ -97,7 +97,7 @@ export function customerRoutes(store: CustomerStore, provider: IdentityProvider,
       const status=await store.status(context);
       const connection=connections ? await connections.service.status(context) : status.connectwise;
       res.json({...status,connectwise:{...connection,setupAvailable:!!connections?.enabled&&status.entitlement.allowed},
-        nextAction:connection.status==="connected"?"connect_ai_client":"connect_connectwise"});
+        nextAction:!status.entitlement.allowed?"access_inactive":connection.status==="connected"?"connect_ai_client":"connect_connectwise"});
     } catch { res.status(503).json({ error: "unavailable" }); }
   });
   return router;

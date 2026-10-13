@@ -1,3 +1,4 @@
+import {randomUUID} from "node:crypto";
 import {expect,vi} from 'vitest';
 import type {Pool} from 'pg';
 import {CustomerStore} from '../../control-plane/auth/store.js';
@@ -36,7 +37,8 @@ export async function verifyConnectionDatabase(runtime:Pool,migrator:Pool) {
  const separate=new ConnectionService(store,factory,normalValidate);
  await migrator.query("UPDATE public.entitlements SET starts_at=now()-interval '31 days',ends_at=now()-interval '1 day' WHERE account_id=$1",[b.accountId]);
  await expect(separate.setup(b,input)).rejects.toMatchObject({code:'entitlement_required'});expect(factory).not.toHaveBeenCalled();expect(normalValidate).not.toHaveBeenCalled();
- await migrator.query("UPDATE public.entitlements SET starts_at=now(),ends_at=now()+interval '30 days' WHERE account_id=$1",[b.accountId]);
+ await runtime.query("INSERT INTO public.entitlements(id,account_id,source,status,starts_at,ends_at) VALUES($1,$2,'web_paid','active',now(),NULL)",[randomUUID(),b.accountId]);
+ expect((await customers.status(b)).entitlement).toMatchObject({allowed:true,accessKind:"standard",trial:{status:"expired"}});
  writer.write.mockImplementationOnce(async(id:string)=>{keys.set(secretNames(id).publicKey,input.publicKey);throw new ConnectionError('storage_unavailable',503);});
  await expect(separate.setup(b,input)).rejects.toMatchObject({code:'storage_unavailable'});
  expect((await runtime.query('SELECT id FROM public.connectwise_connections WHERE account_id=$1',[b.accountId])).rows).toHaveLength(0);
@@ -50,4 +52,17 @@ export async function verifyConnectionDatabase(runtime:Pool,migrator:Pool) {
  const expiring=new ConnectionService(store,expiredWriter,async()=>{await migrator.query("UPDATE public.entitlements SET starts_at=now()-interval '31 days',ends_at=now()-interval '1 day' WHERE account_id=$1",[c.accountId]);});
  await expect(expiring.setup(c,input)).rejects.toMatchObject({code:'entitlement_required'});expect(expiredWriter).not.toHaveBeenCalled();
  expect((await runtime.query('SELECT id FROM public.connectwise_connections WHERE account_id=$1',[c.accountId])).rows).toHaveLength(0);
+ for(const source of ['web_paid','comp','substack']) {
+  const d=(await customers.login({...identity,objectId:randomUUID()})).context;
+  await migrator.query("UPDATE public.entitlements SET starts_at=now()-interval '31 days',ends_at=now()-interval '1 day' WHERE account_id=$1",[d.accountId]);
+  await runtime.query("INSERT INTO public.entitlements(id,account_id,source,status,starts_at,ends_at) VALUES($1,$2,$3,'active',now(),NULL)",[randomUUID(),d.accountId,source]);
+  await expect(separate.setup(d,input)).resolves.toEqual({status:'connected'});
+ }
+ const revoked=(await customers.login({...identity,objectId:randomUUID()})).context;
+ await migrator.query("UPDATE public.entitlements SET status='suspended' WHERE account_id=$1",[revoked.accountId]);
+ const paidId=randomUUID();await runtime.query("INSERT INTO public.entitlements(id,account_id,source,status,starts_at,ends_at) VALUES($1,$2,'web_paid','active',now(),NULL)",[paidId,revoked.accountId]);
+ const duringWrite={...writer,write:async(id:string,pub:string,priv:string)=>{const refs=await writer.write(id,pub,priv);await migrator.query("UPDATE public.entitlements SET status='canceled' WHERE id=$1",[paidId]);return refs;}};
+ await expect(new ConnectionService(store,()=>duringWrite,normalValidate).setup(revoked,input)).rejects.toMatchObject({code:'entitlement_required'});
+ expect((await runtime.query("SELECT id FROM public.connectwise_connections WHERE account_id=$1 AND status='connected'",[revoked.accountId])).rows).toHaveLength(0);
+
 }

@@ -1,3 +1,4 @@
+import { ENTITLEMENT_CASES } from "./fixtures/entitlement-cases.js";
 import {afterEach,describe,expect,it,vi} from "vitest";
 import {withCustomerEvidence,customerAccessOutcome,customerSecretGetAttempt,connectWiseGetAttempt} from "../auth/customer-evidence.js";
 import {AccountAccessStore,createCustomerConfigProvider} from "../auth/customer-access.js";
@@ -25,6 +26,13 @@ describe("bounded request-scoped authorization evidence",()=>{
   expect(getSecret).not.toHaveBeenCalled();expect(send).not.toHaveBeenCalled();
   expect(out.events()).toEqual([expect.objectContaining({customerSecretGetAttempts:0,connectWiseGetAttempts:0})]);
   const printed=JSON.stringify(out.log.mock.calls);for(const value of [principal.subject,uid,aid,cid,row.company_id,row.server_url,row.private_secret_ref,"DO-NOT-LOG-DATABASE-ERROR"])expect(printed).not.toContain(value);
+ });
+ it.each(ENTITLEMENT_CASES.filter(c=>!c.allowed))("$name denies before connection with measured zero calls",async({rows})=>{
+  const out=capture(),getSecret=vi.fn(),send=vi.fn();
+  const query=vi.fn(async(sql:string)=>({rows:sql.includes("external_mcp_identities")?[{user_id:uid,account_id:aid}]:rows}));
+  await withCustomerEvidence({},async()=>{try{const c=await createCustomerConfigProvider(new AccountAccessStore({query} as never,issuer),customerCredentialReader({getSecret} as never))(principal);const t=customerTransport(c.baseUrl,async()=>[],send as never);try{await t.transport(c.baseUrl,{method:"GET"});}finally{await t.close();}}catch{customerAccessOutcome("access_denied");}});
+  expect(query).toHaveBeenCalledTimes(2);expect(getSecret).not.toHaveBeenCalled();expect(send).not.toHaveBeenCalled();
+  expect(out.events()).toEqual([expect.objectContaining({customerSecretGetAttempts:0,connectWiseGetAttempts:0})]);
  });
  it("counts exact version GETs and one GET dispatch without payload/header leakage",async()=>{
   const out=capture(),getSecret=vi.fn(async()=>({value:"DO-NOT-LOG-API-KEY"})),send=vi.fn(async()=>Response.json({private:"DO-NOT-LOG-BODY"}));

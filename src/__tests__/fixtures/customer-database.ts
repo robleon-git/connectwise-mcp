@@ -9,10 +9,10 @@ export async function verifyCustomerDatabase(runtime: Pool, migrator: Pool) {
   expect(new Set(initial.map(value => value.context.accountId)).size).toBe(1);
   expect(new Set(initial.map(value => value.context.userId)).size).toBe(1);
   const trial = await store.status(initial[0].context);
-  expect(trial.entitlement).toMatchObject({ allowed: true, source: "trial", status: "active" });
+  expect(trial.entitlement).toMatchObject({ allowed: true, accessKind: "trial", status: "active" });
   const changed = await store.login({ ...a, email: "changed@example.invalid" });
   expect(changed.context.accountId).toBe(initial[0].context.accountId);
-  expect((await store.status(changed.context)).entitlement.expiresAt).toBe(trial.entitlement.expiresAt);
+  expect((await store.status(changed.context)).entitlement.trial?.expiresAt).toBe(trial.entitlement.trial?.expiresAt);
   const separate = await store.login(b);
   expect(separate.context.accountId).not.toBe(initial[0].context.accountId);
   await expect(store.status({ ...initial[0].context, accountId: separate.context.accountId })).rejects.toThrow("customer_auth_failed");

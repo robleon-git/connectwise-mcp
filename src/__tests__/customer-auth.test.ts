@@ -1,9 +1,10 @@
+import { evaluateEntitlements } from "../entitlements/service.js";
 import { describe, expect, it, vi } from "vitest";
 import { createServer } from "node:http";
 import { generateKeyPair, exportJWK, SignJWT } from "jose";
 import * as oidc from "openid-client";
 import { organizationalIdentity, API_ORIGIN, API_PREFIX, CALLBACK_URI, PORTAL_ORIGIN } from "../control-plane/auth/identity.js";
-import { evaluateTrial, hashToken, CustomerStore } from "../control-plane/auth/store.js";
+import { hashToken, CustomerStore } from "../control-plane/auth/store.js";
 import { customerRoutes, readCookie, SESSION_COOKIE, FLOW_COOKIE, sessionCookieOptions } from "../control-plane/auth/routes.js";
 import { providerFromConfig, type BrowserFlow, type IdentityProvider } from "../control-plane/auth/microsoft.js";
 import { createControlApi } from "../control-plane/server.js";
@@ -23,11 +24,11 @@ describe("organizational identity and trial", () => {
   it.each([
     ["2026-01-01T00:00:00Z", true], ["2026-01-30T23:59:59Z", true], ["2026-01-31T00:00:00Z", false], ["2025-12-31T23:59:59Z", false],
   ])("evaluates UTC trial boundaries server-side at %s", (time, allowed) => {
-    expect(evaluateTrial({ source: "trial", status: "active", startsAt: new Date("2026-01-01T00:00:00Z"), endsAt: new Date("2026-01-31T00:00:00Z") }, new Date(time)).allowed).toBe(allowed);
+    expect(evaluateEntitlements([{ source: "trial", status: "active", starts_at: new Date("2026-01-01T00:00:00Z"), ends_at: new Date("2026-01-31T00:00:00Z"), evaluated_at: new Date(time) }]).allowed).toBe(allowed);
   });
   it("denies missing/suspended entitlement independently of identity", () => {
-    expect(evaluateTrial(null).allowed).toBe(false);
-    expect(evaluateTrial({ source: "trial", status: "suspended", startsAt: new Date(0), endsAt: new Date(Date.now()+10000) }).allowed).toBe(false);
+    expect(evaluateEntitlements([]).allowed).toBe(false);
+    expect(evaluateEntitlements([{ source: "trial", status: "suspended", starts_at: new Date(0), ends_at: new Date(Date.now()+10000), evaluated_at: new Date() }]).allowed).toBe(false);
   });
 });
 describe("maintained OIDC code/PKCE and signed identity validation", () => {

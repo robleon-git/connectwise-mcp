@@ -28,6 +28,10 @@ describe('executable MCP closure comparison',()=>{
   const before=fixture(),after={...before,[file]:before[file as keyof typeof before]+'\nexport const behaviorChange=true;'};
   expect(compareMcpSnapshots(before,after).impact).toBe('changed');
  });
+ it('treats the shared entitlement definition as MCP-affecting, never control-only',()=>{
+  const before={...fixture(),'src/index.ts':'import {allowed} from "./entitlements/service.js";export {allowed};','src/entitlements/service.ts':'export const allowed=()=>false;'};
+  expect(compareMcpSnapshots(before,{...before,'src/entitlements/service.ts':'export const allowed=()=>true;'}).impact).toBe('changed');
+ });
  it.each(['auth','tools'])('blocks reachable MCP %s changes',area=>{
   const before={...fixture(),'src/index.ts':`import {run} from "./${area}/handler.js"; export {run};`,[`src/${area}/handler.ts`]:'export const run=()=>true;'};
   expect(compareMcpSnapshots(before,{...before,[`src/${area}/handler.ts`]:'export const run=()=>false;'}).impact).toBe('changed');

@@ -8,8 +8,8 @@ const { PortalContent } = await import(mainPath);
 const { AiSetupContent, requestAiAuthorization } = await import(aiPath);
 const { AiClientInstructions, copyMcpAddress } = await import(instructionsPath);
 const noop = () => {};
-interface TestStatus { account: { id: string; name: string }; entitlement: { allowed: boolean; source: string | null; status: string; expiresAt: string }; connectwise: { status: string; setupAvailable: boolean; host?: string; companyId?: string } }
-const status: TestStatus = { account: { id: "not-visible", name: "Example MSP" }, entitlement: { allowed: true, source: "trial", status: "active", expiresAt: "2026-12-01T00:00:00Z" }, connectwise: { status: "not_configured", setupAvailable: true } };
+interface TestStatus { account: { id: string; name: string }; entitlement: { allowed: boolean; accessKind: string | null; status: string; trial: { status: string; startsAt: string; expiresAt: string } | null }; connectwise: { status: string; setupAvailable: boolean; host?: string; companyId?: string } }
+const status: TestStatus = { account: { id: "not-visible", name: "Example MSP" }, entitlement: { allowed: true, accessKind: "trial", status: "active", trial: { status: "active", startsAt: "2026-11-01T00:00:00Z", expiresAt: "2026-12-01T00:00:00Z" } }, connectwise: { status: "not_configured", setupAvailable: true } };
 function portal(value = status, extras: Record<string, unknown> = {}) {
   return renderToStaticMarkup(createElement(PortalContent, { status: value, loading: false, error: false, setup: false, onRetry: noop, onSetup: noop, onConnected: noop, onLogout: noop, ...extras }));
 }
@@ -39,8 +39,13 @@ describe("portal onboarding", () => {
     expect(html).not.toMatch(/Connect ConnectWise<\/button>|Connect your AI<\/button>|Checking your AI|Open ChatGPT/);
   });
   it("fails closed for inactive access and unavailable setup", () => {
-    expect(portal({ ...status, entitlement: { ...status.entitlement, allowed: false, source: null, status: "absent" } })).toContain("Access not active");
+    expect(portal({ ...status, entitlement: { ...status.entitlement, allowed: false, accessKind: null, status: "absent" } })).toContain("Access not active");
     expect(portal({ ...status, connectwise: { ...status.connectwise, setupAvailable: false } })).toContain("Connection setup is temporarily unavailable");
+  });
+  it("shows generic nontrial access without expired-access notices or raw sources", () => {
+    const html = portal({ ...status, entitlement: { ...status.entitlement, allowed: true, status: "active", accessKind: "standard", trial: null } });
+    expect(html).toContain("Access active");expect(html).toContain("Connect ConnectWise");
+    expect(html).not.toMatch(/Trial active|Your access has expired|web_paid|substack|comp/);
   });
   it("offers Microsoft sign-in when logged out, with no native portal sign-in", () => {
     const html = portal(status, { status: null });
