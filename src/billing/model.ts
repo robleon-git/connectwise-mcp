@@ -1,6 +1,6 @@
 import { BillingError, type BillingConfig } from "./config.js";
 export const BILLING_EVENTS = ["checkout.session.completed", "customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted", "invoice.paid", "invoice.payment_failed"] as const;
-export interface Receipt { id: string; type: string; created: Date; customer: string | null; subscription: string | null; accountHint: string | null }
+export interface Receipt { id: string; type: string; created: Date; customer: string | null; subscription: string | null; accountHint: string | null; checkoutSession?: string | null }
 export interface BillingOwner { userId: string; accountId: string }
 export interface Mapping { accountId: string; customer: string; subscription: string | null; price: string; paid: boolean; status: string | null }
 export interface SubscriptionState { id: string; customer: string; accountId: string; price: string; status: string; periodStart: Date; periodEnd: Date; cancelAt: Date | null; paidInvoice: boolean; pausedCollection: boolean }
@@ -23,4 +23,12 @@ export function projectSubscription(s: SubscriptionState, mapping: Mapping, conf
 export function providerId(value: unknown, prefix: string): string {
   if (typeof value !== "string" || !new RegExp(`^${prefix}_[A-Za-z0-9]+$`).test(value)) throw new BillingError("invalid_mapping");
   return value;
+}
+
+export interface CheckoutReservation { id: string; accountId: string; customer: string; price: string; session: string | null; expiresAt: Date; status: "reserved" | "open" | "uncertain" | "complete" | "expired" }
+export interface CheckoutSnapshot { id: string; customer: string; accountId: string; reservationId: string; price: string; subscription: string | null; status: "open" | "complete" | "expired"; expiresAt: Date; url: string | null }
+export interface BillingPresentation { enabled: boolean; canSubscribe: boolean; canManage: boolean; state: "trial" | "active" | "payment_attention" | "inactive" | "pending"; priceDisplay: "$29/month" }
+export function billingPresentation(m: Mapping | null, trial: boolean): BillingPresentation {
+  const state = m?.status === "past_due" ? "payment_attention" : m?.paid && m.status === "active" ? "active" : m?.subscription && !["canceled","unpaid","incomplete_expired"].includes(m.status ?? "") ? "pending" : trial ? "trial" : "inactive";
+  return { enabled: true, canSubscribe: !m?.subscription || ["canceled","unpaid","incomplete_expired"].includes(m.status ?? ""), canManage: !!m, state, priceDisplay: "$29/month" };
 }

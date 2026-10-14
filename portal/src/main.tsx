@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./style.css";
+import { Billing } from "./Billing";
 import { AiSetup } from "./AiSetup";
 import { ConnectionForm } from "./ConnectionForm";
 const API = "https://api.monotorr.com/connectwise/v1";
@@ -10,9 +11,9 @@ export interface Status {
     trial: { status: "active" | "expired" | "inactive"; startsAt: string; expiresAt: string } | null };
   connectwise: { status: "not_configured" | "connected"; setupAvailable?: boolean; host?: string; companyId?: string };
 }
-export function PortalContent({ status, loading, error, setup, onRetry, onSetup, onConnected, onLogout }: {
+export function PortalContent({ status, loading, error, setup, onRetry, onSetup, onConnected, onLogout, onAccountRefresh }: {
   status: Status | null; loading: boolean; error: boolean; setup: boolean;
-  onRetry: () => void; onSetup: () => void; onConnected: () => void; onLogout: () => void;
+  onRetry: () => void; onSetup: () => void; onConnected: () => void; onLogout: () => void; onAccountRefresh?: () => void;
 }) {
   const allowed = status?.entitlement.allowed === true;
   const connected = status?.connectwise.status === "connected";
@@ -38,6 +39,7 @@ export function PortalContent({ status, loading, error, setup, onRetry, onSetup,
           {status.account.name && <p>{status.account.name}</p>}
           <p className="status">{allowed ? status.entitlement.accessKind === "trial" ? "Trial active" : "Access active" : expired ? "Access expired" : "Access not active"}</p>
           {status.entitlement.trial && <p>Trial expiration: <time dateTime={status.entitlement.trial.expiresAt}>{new Date(status.entitlement.trial.expiresAt).toLocaleString()}</time></p>}
+          <Billing onAccountRefresh={onAccountRefresh} />
           <button type="button" className="secondary" onClick={onLogout}>Log out</button>
         </section>
       </> : <section><h2>Your account</h2><p>Sign in with your Microsoft business account to get started.</p>
@@ -61,6 +63,7 @@ export function CustomerPortal() {
       .catch(() => { if (!controller.signal.aborted) { setError(true); setLoading(false); } });
     return () => controller.abort();
   }, [refresh]);
+  const refreshAccess = useCallback(() => { setRefresh(n => n + 1); }, []);
   function retry() { setError(false); setLoading(true); setRefresh(n => n + 1); }
   async function logout() {
     setError(false);
@@ -71,7 +74,7 @@ export function CustomerPortal() {
     } catch { setError(true); }
   }
   return <PortalContent status={status} loading={loading} error={error} setup={setup} onRetry={retry}
-    onSetup={() => setSetup(true)} onConnected={() => { setSetup(false); retry(); }} onLogout={() => { void logout(); }} />;
+    onAccountRefresh={refreshAccess} onSetup={() => setSetup(true)} onConnected={() => { setSetup(false); retry(); }} onLogout={() => { void logout(); }} />;
 }
 if (typeof document !== "undefined") {
   const root = document.getElementById("root");

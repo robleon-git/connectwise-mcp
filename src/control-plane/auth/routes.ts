@@ -15,7 +15,7 @@ export function readCookie(header: string | undefined, name: string) {
   if (found.length !== 1) return undefined;
   return found[0].slice(name.length + 1);
 }
-export function customerRoutes(store: CustomerStore, provider: IdentityProvider, flowKey: Uint8Array, connections?: {service:Pick<ConnectionService,"setup"|"status">;enabled:boolean}, ai?: RouterType) {
+export function customerRoutes(store: CustomerStore, provider: IdentityProvider, flowKey: Uint8Array, connections?: {service:Pick<ConnectionService,"setup"|"status">;enabled:boolean}, ai?: RouterType, billing?: RouterType) {
   if (flowKey.length !== 32) throw new CustomerAuthError();
   const router = Router();
   router.use((req, res, next) => {
@@ -34,6 +34,7 @@ export function customerRoutes(store: CustomerStore, provider: IdentityProvider,
     next();
   });
   if (ai) router.use(ai);
+  if (billing) router.use(billing);
   router.get("/auth/login", async (_req, res) => {
     try {
       const random = () => randomBytes(32).toString("base64url");

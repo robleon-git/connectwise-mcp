@@ -2,7 +2,7 @@ import express from "express";
 import type { Router } from "express";
 import { API_PREFIX } from "./auth/identity.js";
 import type { Express } from "express";
-export function createControlApi(checkReady: () => Promise<boolean>, customer?: Router): {
+export function createControlApi(checkReady: () => Promise<boolean>, customer?: Router, billingWebhook?: Router): {
     app: Express;
     drain: () => void;
 } {
@@ -25,6 +25,7 @@ export function createControlApi(checkReady: () => Promise<boolean>, customer?: 
             }
         res.status(ready && !draining ? 200 : 503).json({ status: ready && !draining ? "ready" : "unavailable" });
     });
+    if (billingWebhook) app.use(API_PREFIX,billingWebhook);
     if (customer) app.use(API_PREFIX, customer);
     // Unimplemented product and MCP routes remain unavailable.
     app.use((_req, res) => { res.status(404).json({ error: "not_available" }); });

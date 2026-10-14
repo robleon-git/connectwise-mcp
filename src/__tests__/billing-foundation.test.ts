@@ -8,8 +8,8 @@ import { BillingService } from "../billing/service.js";
 import { BillingStore,type Claim } from "../billing/store.js";
 import { evaluateEntitlements } from "../entitlements/service.js";
 const account="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",user="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
-const config:BillingConfig={mode:"test",stripeAccountId:"acct_fixture",productId:"prod_fixture",priceId:"price_fixture",secretKey:"sk_test_syntheticFixtureOnly",webhookSecret:"whsec_syntheticFixtureOnly"};
-const env={NODE_ENV:"test",CW_BILLING_ENABLED:"true",CW_BILLING_MODE:"test",CW_STRIPE_ACCOUNT_ID:config.stripeAccountId,CW_STRIPE_PRODUCT_ID:config.productId,CW_STRIPE_PRICE_ID:config.priceId,CW_STRIPE_SECRET_KEY:config.secretKey,CW_STRIPE_WEBHOOK_SECRET:config.webhookSecret};
+const config:BillingConfig={mode:"test",stripeAccountId:"acct_fixture",productId:"prod_fixture",priceId:"price_fixture",portalConfigurationId:"bpc_fixture",secretKey:"sk_test_syntheticFixtureOnly",webhookSecret:"whsec_syntheticFixtureOnly"};
+const env={NODE_ENV:"test",CW_BILLING_ENABLED:"true",CW_BILLING_MODE:"test",CW_STRIPE_ACCOUNT_ID:config.stripeAccountId,CW_STRIPE_PRODUCT_ID:config.productId,CW_STRIPE_PRICE_ID:config.priceId,CW_STRIPE_PORTAL_CONFIGURATION_ID:config.portalConfigurationId,CW_STRIPE_SECRET_KEY:config.secretKey,CW_STRIPE_WEBHOOK_SECRET:config.webhookSecret};
 const start=new Date("2026-10-01T00:00:00Z"),end=new Date("2026-11-01T00:00:00Z");
 const map:Mapping={accountId:account,customer:"cus_fixture",subscription:"sub_fixture",price:config.priceId,paid:false,status:null};
 const state=(override:Partial<SubscriptionState>={}):SubscriptionState=>({id:"sub_fixture",customer:map.customer,accountId:account,price:config.priceId,status:"active",periodStart:start,periodEnd:end,cancelAt:null,paidInvoice:true,pausedCollection:false,...override});
@@ -73,5 +73,5 @@ describe("restricted persistence and separation",()=>{
  it("sanitizes mapping database failure and rejects malformed owner before SQL",async()=>{const query=vi.fn().mockRejectedValue(Error("database-private-canary"));const s=new BillingStore({query,connect:vi.fn()} as never);await expect(s.owned({userId:user,accountId:account})).rejects.toThrow(/^billing_unavailable$/);query.mockClear();await expect(s.owned({userId:"email@example.invalid",accountId:account})).rejects.toThrow("invalid_mapping");expect(query).not.toHaveBeenCalled();});
  it("sanitizes database connection acquisition errors",async()=>{const s=new BillingStore({query:vi.fn(),connect:vi.fn().mockRejectedValue(Error("private-db-connect-canary"))} as never);await expect(s.claim("evt_fixture")).rejects.toThrow(/^billing_unavailable$/);});
  it("caps durable work batches",async()=>{const s=new BillingStore({query:vi.fn(),connect:vi.fn()} as never);await expect(s.pending(26)).rejects.toThrow("invalid_configuration");await expect(s.pending(0)).rejects.toThrow("invalid_configuration");});
- it("does not mount billing or create worker on either startup path",()=>{for(const f of ["src/index.ts","src/control-plane/index.ts","src/control-plane/server.ts"]){expect(readFileSync(f,"utf8")).not.toMatch(/billing\/(service|stripe|store)|new Stripe|\/billing\/checkout|\/billing\/webhook/);}});
+ it("does not import Stripe or billing into the MCP startup path",()=>{for(const f of ["src/index.ts"]){expect(readFileSync(f,"utf8")).not.toMatch(/billing\/(service|stripe|store)|new Stripe|\/billing\/checkout|\/billing\/webhook/);}});
 });

@@ -8,6 +8,7 @@ import { bootstrapMcpReader } from "../database/mcp-bootstrap.js";
 import { verifyEntitlementDatabase } from "./fixtures/entitlement-database.js";
 import { verifyMcpDatabase } from "./fixtures/mcp-database.js";
 import { MCP_DATABASE_LIMITS } from "../database/pool.js";
+import { verifyBillingCustomerDatabase } from "./fixtures/billing-customer-database.js";
 import { verifyBillingDatabase } from "./fixtures/billing-database.js";
 import { MIGRATIONS } from "../database/migrationManifest.js";
 describe.skipIf(process.env.CW_DATABASE_INTEGRATION !== "true")("real disposable PostgreSQL 18 migrations", () => {
@@ -51,9 +52,10 @@ describe.skipIf(process.env.CW_DATABASE_INTEGRATION !== "true")("real disposable
             } finally {await locker.query("ROLLBACK");locker.release();}
             await verifyMcpDatabase(runtime,mcp,migrator);
             expect((await mcp.query("SELECT id FROM public.schema_migrations")).rows).toHaveLength(5);
-            expect((await migrate(migrator,migrations)).applied).toBe(1);
+            expect((await migrate(migrator,migrations)).applied).toBe(2);
             await verifyBillingDatabase(runtime,mcp,migrator);
-            expect((await mcp.query("SELECT id FROM public.schema_migrations")).rows).toHaveLength(6);
+            await verifyBillingCustomerDatabase(runtime,mcp,migrator);
+            expect((await mcp.query("SELECT id FROM public.schema_migrations")).rows).toHaveLength(7);
             await expect(runtime.query("DELETE FROM public.schema_migrations")).rejects.toThrow();
             await expect(runtime.query("CREATE TABLE public.forbidden(id int)")).rejects.toThrow();
             await expect(runtime.query("SET ROLE cw_migrator")).rejects.toThrow();

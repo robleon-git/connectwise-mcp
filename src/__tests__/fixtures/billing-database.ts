@@ -11,7 +11,7 @@ import { ACCOUNT_ENTITLEMENTS_SQL,evaluateEntitlements } from "../../entitlement
 /** Disposable PostgreSQL fixtures only; no real Stripe or production commercial state. */
 export async function verifyBillingDatabase(control:Pool,mcp:Pool,migrator:Pool){
  const owner=(await new CustomerStore(control).login({tenantId:randomUUID(),objectId:randomUUID(),name:"Synthetic billing fixture"})).context;
- const config:BillingConfig={mode:"test",stripeAccountId:"acct_fixture",productId:"prod_fixture",priceId:"price_fixture",secretKey:"sk_test_syntheticFixtureOnly",webhookSecret:"whsec_syntheticFixtureOnly"};
+ const config:BillingConfig={mode:"test",stripeAccountId:"acct_fixture",productId:"prod_fixture",priceId:"price_fixture",portalConfigurationId:"bpc_fixture",secretKey:"sk_test_syntheticFixtureOnly",webhookSecret:"whsec_syntheticFixtureOnly"};
  const store=new BillingStore(control);await store.mapCustomer(owner,"cus_billing",config.priceId);await store.bindSubscription(owner,"cus_billing","sub_billing");
  await expect(control.query("INSERT INTO public.account_billing(account_id,stripe_customer_id,stripe_price_id) VALUES($1,'cus_other','price_fixture')",[owner.accountId])).rejects.toMatchObject({code:"23505"});
  const now=new Date(),start=new Date(now.getTime()-86400000),end=new Date(now.getTime()+86400000);
