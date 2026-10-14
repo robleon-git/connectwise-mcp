@@ -8,6 +8,7 @@ import { bootstrapMcpReader } from "../database/mcp-bootstrap.js";
 import { verifyEntitlementDatabase } from "./fixtures/entitlement-database.js";
 import { verifyMcpDatabase } from "./fixtures/mcp-database.js";
 import { MCP_DATABASE_LIMITS } from "../database/pool.js";
+import { verifyBillingDatabase } from "./fixtures/billing-database.js";
 import { MIGRATIONS } from "../database/migrationManifest.js";
 describe.skipIf(process.env.CW_DATABASE_INTEGRATION !== "true")("real disposable PostgreSQL 18 migrations", () => {
     it("bootstraps a private-job-shaped non-superuser admin, migrates, and rejects runtime administration", async () => {
@@ -36,7 +37,7 @@ describe.skipIf(process.env.CW_DATABASE_INTEGRATION !== "true")("real disposable
             runtime = new Pool({ ...local, database: "connectwise", user: "cw_control", password: secrets.get("cw-control-db-password") });
             expect((await runtime.query("SELECT id FROM public.schema_migrations")).rows).toHaveLength(4);
             await verifyCustomerDatabase(runtime, migrator);
-            await verifyEntitlementDatabase(runtime,migrator,migrations);
+            await verifyEntitlementDatabase(runtime,migrator,migrations.slice(0,5));
             await verifyConnectionDatabase(runtime, migrator);
             mcp = new Pool({...local,...MCP_DATABASE_LIMITS,database:"connectwise",user:"cw_mcp",password:secrets.get("cw-mcp-db-password")});
             expect((await mcp.query("SHOW statement_timeout")).rows[0].statement_timeout).toBe("5s");
@@ -50,6 +51,9 @@ describe.skipIf(process.env.CW_DATABASE_INTEGRATION !== "true")("real disposable
             } finally {await locker.query("ROLLBACK");locker.release();}
             await verifyMcpDatabase(runtime,mcp,migrator);
             expect((await mcp.query("SELECT id FROM public.schema_migrations")).rows).toHaveLength(5);
+            expect((await migrate(migrator,migrations)).applied).toBe(1);
+            await verifyBillingDatabase(runtime,mcp,migrator);
+            expect((await mcp.query("SELECT id FROM public.schema_migrations")).rows).toHaveLength(6);
             await expect(runtime.query("DELETE FROM public.schema_migrations")).rejects.toThrow();
             await expect(runtime.query("CREATE TABLE public.forbidden(id int)")).rejects.toThrow();
             await expect(runtime.query("SET ROLE cw_migrator")).rejects.toThrow();
