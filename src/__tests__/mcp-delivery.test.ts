@@ -141,6 +141,15 @@ describe("computed Slice 3 control-only promotion",()=>{
  });
 });
 describe("explicit MCP delivery boundaries",()=>{
+ it.each(["Dockerfile", "Dockerfile.control-plane"])("%s declares revision provenance in the final image stage",async file=>{
+  const dockerfile=await readFile(new URL("../../"+file,import.meta.url),"utf8");
+  const finalStage=dockerfile.split(/^FROM .+$/m).at(-1)!;
+  const argument=finalStage.search(/^ARG COMMIT_SHA\s*$/m);
+  const label=finalStage.search(/^LABEL org\.opencontainers\.image\.revision=["']?\$\{?COMMIT_SHA\}?["]?\s*$/m);
+  expect(argument).toBeGreaterThanOrEqual(0);
+  expect(label).toBeGreaterThan(argument);
+ });
+
  it("requires clean committed exact reviewed source before any Azure call",async()=>{
   await expect(mcpRelease("candidate",input("candidate",{reviewedSha:oldSha}),dependencies())).rejects.toThrow("reviewed_source_mismatch");expect(az).not.toHaveBeenCalled();
   execute.mockImplementation(async(_name,args)=>({stdout:args[0]==="status"?" M src/index.ts":sha}));
@@ -152,7 +161,7 @@ describe("explicit MCP delivery boundaries",()=>{
  it("build publishes exact-source immutable MCP/control images and retains safe baseline",async()=>{
   const original=az.getMockImplementation()!;az.mockImplementation(async args=>args[0]==="acr"?args.includes("digest")?"sha256:"+digest:args.includes("repository")?"false":"":original(args));
   await expect(mcpRelease("build",input("build",{ownerBaselineConnected:true,baselineReadToolsVerified:true}),dependencies())).resolves.toMatchObject({built:true});
-  const builds=execute.mock.calls.filter(c=>c[0]==="docker"&&c[1][0]==="build");expect(builds).toHaveLength(2);expect(builds[0][1]).toContain("Dockerfile");expect(builds[1][1]).toContain("Dockerfile.control-plane");expect(mutations()).toHaveLength(0);
+  const builds=execute.mock.calls.filter(c=>c[0]==="docker"&&c[1][0]==="build");expect(builds).toHaveLength(2);expect(builds[0][1]).toContain("Dockerfile");expect(builds[1][1]).toContain("Dockerfile.control-plane");for(const build of builds){const args=build[1];expect(args[args.indexOf("--build-arg")+1]).toBe(`COMMIT_SHA=${sha}`);}expect(mutations()).toHaveLength(0);
   const saved=JSON.parse(write.mock.calls[0][1]);expect(saved.mcpImage).toBe(image);expect(saved.controlImage).toBe(controlImage);expect(saved.sha).toBe(sha);expect(JSON.stringify(saved)).not.toContain("DO-NOT-PERSIST-SECRET");
  });
  it("invalid fixed linking client stops before migration or control mutation",async()=>{

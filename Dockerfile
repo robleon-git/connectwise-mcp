@@ -24,6 +24,9 @@ RUN npm run build:ui && npm run build
 # Production stage
 FROM node:26-alpine AS production
 
+# Build arguments are scoped to each stage.
+ARG COMMIT_SHA
+
 # Create a non-root user for security
 RUN addgroup -g 1001 -S cwmanage && \
     adduser -S cwmanage -u 1001 -G cwmanage
