@@ -3,6 +3,7 @@ import { Pool } from "pg";
 import { migrate, loadMigrations } from "../database/migrationRunner.js";
 import { bootstrapDatabase, BOOTSTRAP_PENDING } from "../database/bootstrap.js";
 import { verifyCustomerDatabase } from "./fixtures/customer-database.js";
+import { verifyConnectionManagementDatabase } from "./fixtures/connection-management-database.js";
 import { verifyConnectionDatabase } from "./fixtures/connection-database.js";
 import { bootstrapMcpReader } from "../database/mcp-bootstrap.js";
 import { verifyEntitlementDatabase } from "./fixtures/entitlement-database.js";
@@ -55,6 +56,7 @@ describe.skipIf(process.env.CW_DATABASE_INTEGRATION !== "true")("real disposable
             expect((await migrate(migrator,migrations)).applied).toBe(2);
             await verifyBillingDatabase(runtime,mcp,migrator);
             await verifyBillingCustomerDatabase(runtime,mcp,migrator);
+            await verifyConnectionManagementDatabase(runtime,mcp,migrator);
             expect((await mcp.query("SELECT id FROM public.schema_migrations")).rows).toHaveLength(7);
             await expect(runtime.query("DELETE FROM public.schema_migrations")).rejects.toThrow();
             await expect(runtime.query("CREATE TABLE public.forbidden(id int)")).rejects.toThrow();

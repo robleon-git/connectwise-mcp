@@ -23,7 +23,7 @@ export async function verifyConnectionDatabase(runtime:Pool,migrator:Pool) {
  await expect(service.setup(a,input)).rejects.toMatchObject({code:'setup_in_progress'});
  expect(validate).toHaveBeenCalledTimes(1);unblock();await expect(first).resolves.toEqual({status:'connected'});
  expect(writer.write).toHaveBeenCalledTimes(1);
- expect(await store.status(a)).toEqual({status:'connected',host:'manage.example.com',companyId:'synthetic'});
+ expect(await store.status(a)).toEqual({status:'connected',host:'manage.example.com',serverUrl:'https://manage.example.com',companyId:'synthetic'});
  expect(await store.status(b)).toEqual({status:'not_configured'});
  await expect(store.status({...b,accountId:a.accountId})).rejects.toMatchObject({code:'entitlement_required'});
  await expect(service.setup(a,input)).rejects.toMatchObject({code:'already_configured'});

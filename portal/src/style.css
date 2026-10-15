@@ -46,3 +46,8 @@ summary { cursor: pointer; font-weight: 600; min-height: 32px; }
 
 .billing { margin: 1.5rem 0; }
 .billing h3 { margin-bottom: .75rem; }
+
+.connection-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-block: 1rem; }
+.danger { font-weight: 700; text-decoration: underline; text-underline-offset: .2em; }
+.connection-confirm { margin-block: 1.5rem; max-width: 38rem; }
+.connection-confirm button + button { margin-left: .5rem; }

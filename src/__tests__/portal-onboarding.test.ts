@@ -25,10 +25,10 @@ describe("portal onboarding", () => {
     expect(html.indexOf('id="connectwise-heading"')).toBeLessThan(html.indexOf('id="ai-heading"'));
     expect(html.indexOf('id="ai-heading"')).toBeLessThan(html.indexOf('id="account-heading"'));
   });
-  it("shows saved connection metadata without inventing a live health check or manage controls", () => {
+  it("shows saved connection metadata without claiming remote health", () => {
     const html = portal({ ...status, connectwise: { ...status.connectwise, status: "connected", host: "cw.example.com", companyId: "example" } });
     expect(html).toContain("Connected"); expect(html).toContain("cw.example.com");
-    expect(html).toContain("not a live connection check");
+    expect(html).toContain("Your ConnectWise connection is saved.");
     expect(html).not.toMatch(/Manage connection|Disconnect|Test Connection/);
     expect(html).toContain("Checking your AI setup");
   });

@@ -3,13 +3,14 @@ import { createRoot } from "react-dom/client";
 import "./style.css";
 import { Billing } from "./Billing";
 import { AiSetup } from "./AiSetup";
+import { ConnectionManagement } from "./ConnectionManagement";
 import { ConnectionForm } from "./ConnectionForm";
 const API = "https://api.monotorr.com/connectwise/v1";
 export interface Status {
   account: { id: string; name: string | null };
   entitlement: { allowed: boolean; status: "active" | "expired" | "inactive"; accessKind: "trial" | "standard" | null;
     trial: { status: "active" | "expired" | "inactive"; startsAt: string; expiresAt: string } | null };
-  connectwise: { status: "not_configured" | "connected"; setupAvailable?: boolean; host?: string; companyId?: string };
+  connectwise: { status: "not_configured" | "connected"; setupAvailable?: boolean; host?: string; serverUrl?: string; managementAvailable?: boolean; companyId?: string };
 }
 export function PortalContent({ status, loading, error, setup, onRetry, onSetup, onConnected, onLogout, onAccountRefresh }: {
   status: Status | null; loading: boolean; error: boolean; setup: boolean;
@@ -19,14 +20,13 @@ export function PortalContent({ status, loading, error, setup, onRetry, onSetup,
   const connected = status?.connectwise.status === "connected";
   const expired = status?.entitlement.status === "expired";
   return <main>
-    <header><h1>Monotorr ConnectWise</h1><p className="tagline">Your ConnectWise data. Your AI.</p></header>
+    <header><h1>Monotorr</h1><p className="tagline">Your ConnectWise data. Your AI.</p></header>
     {loading ? <p role="status">Loading your account…</p> : error ?
       <div><p role="alert">We couldn’t load your account. Please try again.</p><button type="button" onClick={onRetry}>Try again</button></div> : status ? <>
         {!allowed && <p role="alert" className="access-notice">{expired ? "Your access has expired." : "Your account access is not active."} Setup is unavailable until your access is active.</p>}
         <section aria-labelledby="connectwise-heading"><h2 id="connectwise-heading">ConnectWise</h2>
           <p className="status">{connected ? "Connected" : "Not configured"}</p>
-          {connected ? <><p>Your connection was validated and saved. This is your saved configuration, not a live connection check.</p>
-            <dl><dt>Server</dt><dd>{status.connectwise.host}</dd><dt>Company</dt><dd>{status.connectwise.companyId}</dd></dl></> :
+          {connected ? <ConnectionManagement saved={status.connectwise} enabled={status.connectwise.managementAvailable===true} canValidate={allowed&&status.connectwise.setupAvailable===true} onChanged={onConnected} /> :
             allowed ? <><p>Connect your ConnectWise environment to get started.</p>{status.connectwise.setupAvailable ?
               setup ? <ConnectionForm onConnected={onConnected} /> : <button type="button" onClick={onSetup}>Connect ConnectWise</button> :
               <p>Connection setup is temporarily unavailable. Please try again later.</p>}</> : null}
