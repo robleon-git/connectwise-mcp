@@ -1,4 +1,5 @@
-import { migrationPlan, readControlRequirements, verifyControlRequirements, migrationJobArgs, migrationCompletion } from "./migration-features.mjs";
+import { breadcrumbPreflight, releaseMigrationContext, contextEnv, pollReceipt, migrationAttestation, receiptConfiguration, storeEnv } from "./migration-breadcrumbs.mjs";
+import { migrationPlan, readControlRequirements, verifyControlRequirements, migrationJobArgs } from "./migration-features.mjs";
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { configuration, az, execute, assertSubscription, immutableImage, featureOnlyDeployment } from "./common.mjs";
@@ -58,17 +59,22 @@ export async function release(action) {
             if(selected.image!==current.image||selected.health!=="Healthy")throw new Error("control_baseline_unconfirmed");
             await smoke(`https://${current.fqdn}`,"control-api");
         }
+        const migrationContext = condition?.kind === "control-only" ? undefined : releaseMigrationContext(built, schemaPlan);
+        const receiptStore = migrationContext ? await receiptConfiguration() : undefined;
+        if (migrationContext) await breadcrumbPreflight(az, c, receiptStore);
         await az(["containerapp", "ingress", "traffic", "set", ...target, "--revision-weight", `${current.revision}=100`, "-o", "none"]);
         if(condition)await readControlTraffic(az,target,current.revision);
         await mkdir(".delivery", { recursive: true });
         // Persist rollback evidence BEFORE changing the candidate or migration job.
         const manifest = { ...built, previousRevision: current.revision, previousImage: current.image, previousSha, portalArtifactSha: built.sha, schemaPlan, ...(condition ? {condition} : {}) };
         await writeFile(manifestPath, JSON.stringify(manifest) + "\n");
-        let execution, migrationResult;
+        let execution, migrationProof;
         if(condition?.kind!=="control-only") {
-            await az(["containerapp", "job", "update", "-n", c.migrationJob, "-g", c.resourceGroup, "--image", built.image, "--command", "node", "--args", ...migrationJobArgs(schemaPlan), "-o", "none"]);
-            const job = JSON.parse(await az(["containerapp", "job", "show", "-n", c.migrationJob, "-g", c.resourceGroup, "--query", "properties.template.containers[].{image:image,command:command,args:args}", "-o", "json"]));
+            await az(["containerapp", "job", "update", "-n", c.migrationJob, "-g", c.resourceGroup, "--image", built.image, "--command", "node", "--args", ...migrationJobArgs(schemaPlan), "--set-env-vars", contextEnv(migrationContext), storeEnv(receiptStore), "-o", "none"]);
+            const job = JSON.parse(await az(["containerapp", "job", "show", "-n", c.migrationJob, "-g", c.resourceGroup, "--query", "properties.template.containers[].{image:image,command:command,args:args,context:env[?name=='CW_MIGRATION_CONTEXT'].value,store:env[?name=='CW_MIGRATION_RECEIPT_STORE'].value}", "-o", "json"]));
             if (!Array.isArray(job) || job.length !== 1 || job[0].image !== built.image || JSON.stringify(job[0].command) !== JSON.stringify(["node"]) || JSON.stringify(job[0].args) !== JSON.stringify(migrationJobArgs(schemaPlan))) throw new Error("migration_job_mismatch");
+            if (JSON.stringify(job[0].context) !== JSON.stringify([contextEnv(migrationContext).split("=")[1]])) throw new Error("migration_job_context_mismatch");
+            if (JSON.stringify(job[0].store) !== JSON.stringify([storeEnv(receiptStore).split("=")[1]])) throw new Error("migration_job_store_mismatch");
             execution = await az(["containerapp", "job", "start", "-n", c.migrationJob, "-g", c.resourceGroup, "--query", "name", "-o", "tsv"]);
             if (!/^[a-z0-9-]+$/.test(execution))
                 throw new Error("invalid_execution");
@@ -83,9 +89,18 @@ export async function release(action) {
                     break;
                 await new Promise(r => setTimeout(r, 3000));
             }
-            if (!migrated)
-                throw new Error("migration_not_succeeded");
-            migrationResult = migrationCompletion(await az(["containerapp", "job", "logs", "show", "-n", c.migrationJob, "-g", c.resourceGroup, "--execution", execution, "--container", c.migrationJob, "--tail", "100", "--format", "json"]), schemaPlan);
+            const executionContainers = JSON.parse(await az(["containerapp", "job", "execution", "show", "-n", c.migrationJob, "-g", c.resourceGroup, "--job-execution-name", execution, "--query", "properties.template.containers[].{image:image,command:command,args:args,context:env[?name=='CW_MIGRATION_CONTEXT'].value,store:env[?name=='CW_MIGRATION_RECEIPT_STORE'].value}", "-o", "json"]));
+            if (JSON.stringify(executionContainers) !== JSON.stringify(job)) throw new Error("migration_execution_mismatch");
+            // Detailed receipts have a separate 30-day lifetime; active provenance retains an attestation only.
+            let evidence, observed = [];
+            try {
+                evidence = await pollReceipt(az, migrationContext, execution, schemaPlan, {store:receiptStore, observe: events => { observed = events; }});
+                if (!migrated) throw new Error("migration_not_succeeded");
+                migrationProof = migrationAttestation(evidence);
+            } finally {
+                await writeFile(".delivery/migration-breadcrumb.json", JSON.stringify({version:"migration-breadcrumb-v1", context:migrationContext, execution, azureExecutionSucceeded:migrated, ...(evidence ? {evidence} : {completion:"unproven", events:observed})}) + "\n");
+            }
+
         }
         await verifyControlRequirements(az, c, schemaPlan);
         const suffix = `p0-${built.sha.slice(0, 12)}`;
@@ -107,7 +122,7 @@ export async function release(action) {
         const domain = current.fqdn.split(".").slice(1).join(".");
         await smoke(`https://${c.controlApi}---candidate.${domain}`, "control-api");
         await smoke("https://api.monotorr.com", "mcp");
-        await writeFile(manifestPath, JSON.stringify({ ...manifest, revision, candidateSmokePassed: true, execution, migrationResult }) + "\n");
+        await writeFile(manifestPath, JSON.stringify({ ...manifest, revision, candidateSmokePassed: true, execution, migrationProof }) + "\n");
         return { prepared: true, revision, image: built.image };
     }
     if (!["promote", "rollback"].includes(action))

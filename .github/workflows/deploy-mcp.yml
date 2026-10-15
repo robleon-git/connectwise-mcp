@@ -141,3 +141,13 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 90
+
+      - name: Retain rolling migration breadcrumbs separately
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: migration-breadcrumbs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .delivery/migration-breadcrumb.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 30

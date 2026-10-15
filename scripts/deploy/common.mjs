@@ -9,9 +9,9 @@ export async function configuration(path = "deployment/azure/config.json") {
         throw new Error("invalid_delivery_target");
     return Object.freeze(c);
 }
-export async function az(args) {
+export async function az(args, { timeout = 120000 } = {}) {
     try {
-        return (await execute("az", [...args, "--only-show-errors"], { timeout: 120000, maxBuffer: 1024 * 1024, env: { ...process.env, AZURE_EXTENSION_USE_DYNAMIC_INSTALL: "no" } })).stdout.trim();
+        return (await execute("az", [...args, "--only-show-errors"], { timeout, maxBuffer: 1024 * 1024, env: { ...process.env, AZURE_EXTENSION_USE_DYNAMIC_INSTALL: "no" } })).stdout.trim();
     }
     catch {
         throw new Error("azure_operation_failed");

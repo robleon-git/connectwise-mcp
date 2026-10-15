@@ -1,12 +1,14 @@
 // @ts-expect-error Delivery script has no declarations.
 import { migrationPlan } from "../../scripts/deploy/migration-features.mjs";
-import { beforeEach, describe, it, expect, vi } from "vitest";
-const mocks = vi.hoisted(() => ({ az: vi.fn(), execute: vi.fn(), readFile: vi.fn(), writeFile: vi.fn(), smoke: vi.fn(), impact: vi.fn(), condition: vi.fn() }));
+import { beforeEach, afterEach, describe, it, expect, vi } from "vitest";
+const mocks = vi.hoisted(() => ({ az: vi.fn(), execute: vi.fn(), readFile: vi.fn(), writeFile: vi.fn(), smoke: vi.fn(), impact: vi.fn(), condition: vi.fn(), preflight: vi.fn(), receipt: vi.fn() }));
 vi.mock("node:fs/promises", () => ({ readFile: mocks.readFile, writeFile: mocks.writeFile, mkdir: vi.fn() }));
 vi.mock("../../scripts/deploy/common.mjs", () => ({ configuration: async () => ({ controlApi: "connectwise-control-api", migrationJob: "connectwise-migrate", resourceGroup: "monotorr-connectwise-prod-rg", registry: "monotorrdevacr6689",customerLoginClientId:"4405ef16-dc89-4385-8a84-cda2a52274cf" }), assertSubscription: vi.fn(), featureOnlyDeployment: vi.fn(), immutableImage: (_c: unknown, i: string) => i, needsDogfood: (p: string[]) => p.some(x => x === "src/auth/descope-mcp.ts"), az: mocks.az, execute: mocks.execute }));
 vi.mock("../../scripts/deploy/mcp-impact.mjs", () => ({ assessMcpImpact: mocks.impact }));
 vi.mock("../../scripts/deploy/smoke.mjs", () => ({ smoke: mocks.smoke }));
 vi.mock("../../scripts/deploy/control-condition.mjs", async importOriginal => ({...await importOriginal<object>(),controlCondition:mocks.condition}));
+vi.mock("../../scripts/deploy/migration-breadcrumbs.mjs",async original=>({...await original<object>(),
+ breadcrumbPreflight:mocks.preflight, pollReceipt:mocks.receipt}));
 // @ts-expect-error Operator script has no declarations.
 import { release } from "../../scripts/deploy/release.mjs";
 const sha = "a".repeat(40), previous = "b".repeat(40), image = "monotorrdevacr6689.azurecr.io/connectwise-control-api@sha256:" + "a".repeat(64);
@@ -16,14 +18,19 @@ beforeEach(async () => {
     mocks.readFile.mockImplementation(actualFs.readFile);
     schemaPlan=await migrationPlan("core");
     vi.clearAllMocks();
+    vi.stubEnv("GITHUB_REPOSITORY","robleon-git/connectwise-mcp");vi.stubEnv("GITHUB_RUN_ID","123");vi.stubEnv("GITHUB_RUN_ATTEMPT","1");
+    mocks.preflight.mockResolvedValue(undefined);
+    mocks.receipt.mockImplementation(async (_call,context,execution)=>({version:"migration-breadcrumb-v1",context,execution,events:[],result:{}}));
     mocks.condition.mockResolvedValue({kind:"control-only",previousSha:previous,sha,moduleCount:39,protectedInputsEqual:true,migrationCount:4,migrationFingerprint:"c".repeat(64)});
     mocks.impact.mockResolvedValue({impact:"unchanged",changedOutputs:[]});
     mocks.execute.mockImplementation(async (_command: string, args: string[]) => ({ stdout: args[0] === "status" ? "" : args[0] === "rev-parse" ? sha : args[0] === "diff" ? "portal/src/main.tsx" : "" }));
     mocks.readFile.mockImplementation(async (path: string | URL) => path instanceof URL ? actualFs.readFile(path,"utf8") : JSON.stringify(path.endsWith("built-image.json") ? { sha, image } : { sha, image, previousImage: image, previousSha: previous, previousRevision: "connectwise-control-api--previous", revision: "connectwise-control-api--candidate", candidateSmokePassed: true, schemaPlan }));
     mocks.az.mockImplementation(async (args: string[]) => {
         if (args.some(arg=>arg.includes("containers[].{env:"))) return JSON.stringify([{env:[{name:"NODE_ENV",value:"production"},{name:"CW_BILLING_ENABLED",value:"false"}]}]);
-        if (args.includes("job") && args.includes("show") && args.some(arg=>arg.includes("containers[].{image:"))) return JSON.stringify([{image,command:["node"],args:["dist/database/cli.js","core"]}]);
-        if (args.includes("logs")) return JSON.stringify({event:"migration.completed",requirements:["core"],applied:0,appliedIds:[],deferredIds:schemaPlan.optionalIds,installedOptionalIds:[]});
+        if (args.includes("job") && args.includes("show") && args.some(arg=>arg.includes("containers[].{image:"))) {
+            const update=mocks.az.mock.calls.find(([a])=>a.includes("--set-env-vars"))?.[0];
+            return JSON.stringify([{image,command:["node"],args:["dist/database/cli.js","core"],context:[update?.[update.indexOf("--set-env-vars")+1].split("=")[1]],store:[update?.[update.indexOf("--set-env-vars")+2].split("=")[1]]}]);
+        }
         if (args[0] === "acr")
             return JSON.stringify([previous]);
         if (args.includes("execution"))
@@ -37,6 +44,7 @@ beforeEach(async () => {
         return "";
     });
 });
+afterEach(()=>vi.unstubAllEnvs());
 describe("Phase 0 control-only release failure gates", () => {
     it("schema-compatible Slice 3 preparation performs zero migration job calls",async()=>{
         const original=mocks.az.getMockImplementation()!;
@@ -159,7 +167,7 @@ describe("approved reusable candidate label", () => {
     it("moves the existing label without a second CLI prompt and pins production to the prior revision", async () => {
         const original = mocks.az.getMockImplementation()!;
         mocks.az.mockImplementation(async (args: string[]) => {
-            if (args.includes("execution")) return "Succeeded";
+            if (args.includes("properties.status")) return "Succeeded";
             return original(args);
         });
         await expect(release("prepare")).resolves.toMatchObject({ prepared: true });
@@ -202,7 +210,7 @@ describe("promotion source cleanliness",()=>{
 describe("Slice 2 candidate-only setup setting",()=>{
  it("sets setup true only in the new control candidate update after migration",async()=>{
   const original=mocks.az.getMockImplementation()!;
-  mocks.az.mockImplementation(async(args:string[])=>args.includes("execution")?"Succeeded":original(args));
+  mocks.az.mockImplementation(async(args:string[])=>args.includes("properties.status")?"Succeeded":original(args));
   await release("prepare");
   const updates=mocks.az.mock.calls.map(call=>call[0] as string[]).filter(args=>args.includes("CW_CONNECTION_SETUP_ENABLED=true"));
   expect(updates).toHaveLength(1);expect(updates[0].slice(0,2)).toEqual(["containerapp","update"]);
@@ -218,12 +226,12 @@ describe("reviewed migration execution propagation",()=>{
  it("passes the exact feature selection to the job, verifies readback and records the sanitized result",async()=>{
   mocks.condition.mockResolvedValue({kind:"mcp-affecting",previousSha:previous,sha});
   const original=mocks.az.getMockImplementation()!;
-  mocks.az.mockImplementation(async(args:string[])=>args.includes("execution")?"Succeeded":args.includes("properties.configuration.ingress.traffic")?JSON.stringify([{revisionName:"connectwise-control-api--previous",weight:100}]):original(args));
+  mocks.az.mockImplementation(async(args:string[])=>args.includes("properties.status")?"Succeeded":args.includes("properties.configuration.ingress.traffic")?JSON.stringify([{revisionName:"connectwise-control-api--previous",weight:100}]):original(args));
   await release("prepare-slice3");
   const update=mocks.az.mock.calls.find(([args])=>args.includes("job")&&args.includes("update"))![0];
-  expect(update.slice(update.indexOf("--command"),update.indexOf("-o"))).toEqual(["--command","node","--args","dist/database/cli.js","core"]);
+  expect(update.slice(update.indexOf("--command"),update.indexOf("--set-env-vars"))).toEqual(["--command","node","--args","dist/database/cli.js","core"]);
   const evidence=JSON.parse(mocks.writeFile.mock.calls.at(-1)![1]);
-  expect(evidence.schemaPlan).toEqual(schemaPlan);expect(evidence.migrationResult).toEqual({requirements:["core"],applied:0,appliedIds:[],deferredIds:schemaPlan.optionalIds,installedOptionalIds:[]});
+  expect(evidence.schemaPlan).toEqual(schemaPlan);expect(evidence.migrationProof).toMatchObject({sourceSha:sha,image,schemaVerified:true,azureExecutionSucceeded:true});expect(evidence.migrationResult).toBeUndefined();
  });
  it("unknown target feature state fails before any live mutation",async()=>{
   const original=mocks.az.getMockImplementation()!;mocks.az.mockImplementation(async(args:string[])=>args.some(arg=>arg.includes("containers[].{env:"))?JSON.stringify([{env:[{name:"CW_BILLING_ENABLED",value:"unknown"}]}]):original(args));
@@ -238,8 +246,9 @@ describe("reviewed migration execution propagation",()=>{
   await expect(release("prepare")).rejects.toThrow("migration_job_mismatch");expect(mocks.az.mock.calls.some(([args])=>args.includes("start"))).toBe(false);expect(mocks.az.mock.calls.some(([args])=>args[0]==="containerapp"&&args[1]==="update")).toBe(false);
  });
  it("successful job without verifiable completion evidence cannot prepare a candidate",async()=>{
-  const original=mocks.az.getMockImplementation()!;mocks.az.mockImplementation(async(args:string[])=>args.includes("execution")?"Succeeded":args.includes("logs")?"missing":original(args));
-  await expect(release("prepare")).rejects.toThrow("migration_result_unproven");expect(mocks.az.mock.calls.some(([args])=>args[0]==="containerapp"&&args[1]==="update")).toBe(false);
+  const original=mocks.az.getMockImplementation()!;mocks.az.mockImplementation(async(args:string[])=>args.includes("properties.status")?"Succeeded":original(args));
+  mocks.receipt.mockRejectedValueOnce(new Error("migration_receipt_timeout"));
+  await expect(release("prepare")).rejects.toThrow("migration_receipt_timeout");expect(mocks.az.mock.calls.some(([args])=>args[0]==="containerapp"&&args[1]==="update")).toBe(false);
  });
  it("promotion refuses absent or stale feature-plan evidence before traffic changes",async()=>{
   const original=mocks.readFile.getMockImplementation()!;
@@ -247,5 +256,25 @@ describe("reviewed migration execution propagation",()=>{
    const result=await original(path);if(path instanceof URL)return result;const data=JSON.parse(result);data.schemaPlan={...schemaPlan,selection:"core,billing"};return JSON.stringify(data);
   });
   await expect(release("promote")).rejects.toThrow("control_features_changed");expect(mocks.az.mock.calls.some(([args])=>args.includes("activate")||args.includes("traffic"))).toBe(false);
+ });
+});
+
+describe("durable migration delivery safety",()=>{
+ it("retention or query failure blocks every mutation",async()=>{
+  mocks.preflight.mockRejectedValueOnce(new Error("migration_retention_unproven"));
+  await expect(release("prepare")).rejects.toThrow("migration_retention_unproven");expect(mocks.az.mock.calls.some(([args])=>args.includes("set")||args.includes("update")||args.includes("start"))).toBe(false);
+ });
+ it("receipt alone cannot override failed Azure execution",async()=>{
+  await expect(release("prepare")).rejects.toThrow("migration_not_succeeded");expect(mocks.receipt).toHaveBeenCalledOnce();expect(mocks.az.mock.calls.filter(([a])=>a.includes("start"))).toHaveLength(1);
+  expect(mocks.az.mock.calls.some(([a])=>a.includes("logs")||a.includes("replica"))).toBe(false);expect(mocks.az.mock.calls.some(([a])=>a[0]==="containerapp"&&a[1]==="update")).toBe(false);
+ });
+ it("execution image/context mismatch cannot use a receipt",async()=>{
+  const original=mocks.az.getMockImplementation()!;
+  mocks.az.mockImplementation(async(args:string[])=>args.includes("execution")&&args.some(a=>a.includes("containers[]."))?"[]":original(args));
+  await expect(release("prepare")).rejects.toThrow("migration_execution_mismatch");expect(mocks.receipt).not.toHaveBeenCalled();
+ });
+ it("job context mismatch blocks start",async()=>{
+  const original=mocks.az.getMockImplementation()!;mocks.az.mockImplementation(async(args:string[])=>args.some(a=>a.includes("containers[].{image:"))?JSON.stringify([{image,command:["node"],args:["dist/database/cli.js","core"],context:["wrong"]}]):original(args));
+  await expect(release("prepare")).rejects.toThrow("migration_job_context_mismatch");expect(mocks.az.mock.calls.some(([a])=>a.includes("start"))).toBe(false);
  });
 });
