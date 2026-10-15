@@ -1,3 +1,4 @@
+import { migrationPlan, readControlRequirements, verifyControlRequirements, migrationJobArgs, migrationCompletion } from "./migration-features.mjs";
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { configuration, az, execute, assertSubscription, immutableImage, featureOnlyDeployment } from "./common.mjs";
@@ -49,6 +50,8 @@ export async function release(action) {
         if (!previousSha)
             throw new Error("previous_source_unknown");
         const condition = action === "prepare-slice3" ? await controlCondition(previousSha, built.sha) : undefined;
+        const schemaPlan = await migrationPlan(await readControlRequirements(az, c));
+        if (condition?.kind === "control-only" && await readControlRequirements(az, c, current.revision) !== schemaPlan.selection) throw new Error("control_feature_expansion_requires_migration");
         if (condition) {
             requireControlTraffic(current.traffic,current.revision);
             const selected=JSON.parse(await az(["containerapp","revision","show",...target,"--revision",current.revision,"--query","{image:properties.template.containers[0].image,health:properties.healthState}","-o","json"]));
@@ -59,11 +62,13 @@ export async function release(action) {
         if(condition)await readControlTraffic(az,target,current.revision);
         await mkdir(".delivery", { recursive: true });
         // Persist rollback evidence BEFORE changing the candidate or migration job.
-        const manifest = { ...built, previousRevision: current.revision, previousImage: current.image, previousSha, portalArtifactSha: built.sha, ...(condition ? {condition} : {}) };
+        const manifest = { ...built, previousRevision: current.revision, previousImage: current.image, previousSha, portalArtifactSha: built.sha, schemaPlan, ...(condition ? {condition} : {}) };
         await writeFile(manifestPath, JSON.stringify(manifest) + "\n");
-        let execution;
+        let execution, migrationResult;
         if(condition?.kind!=="control-only") {
-            await az(["containerapp", "job", "update", "-n", c.migrationJob, "-g", c.resourceGroup, "--image", built.image, "-o", "none"]);
+            await az(["containerapp", "job", "update", "-n", c.migrationJob, "-g", c.resourceGroup, "--image", built.image, "--command", "node", "--args", ...migrationJobArgs(schemaPlan), "-o", "none"]);
+            const job = JSON.parse(await az(["containerapp", "job", "show", "-n", c.migrationJob, "-g", c.resourceGroup, "--query", "properties.template.containers[].{image:image,command:command,args:args}", "-o", "json"]));
+            if (!Array.isArray(job) || job.length !== 1 || job[0].image !== built.image || JSON.stringify(job[0].command) !== JSON.stringify(["node"]) || JSON.stringify(job[0].args) !== JSON.stringify(migrationJobArgs(schemaPlan))) throw new Error("migration_job_mismatch");
             execution = await az(["containerapp", "job", "start", "-n", c.migrationJob, "-g", c.resourceGroup, "--query", "name", "-o", "tsv"]);
             if (!/^[a-z0-9-]+$/.test(execution))
                 throw new Error("invalid_execution");
@@ -80,7 +85,9 @@ export async function release(action) {
             }
             if (!migrated)
                 throw new Error("migration_not_succeeded");
+            migrationResult = migrationCompletion(await az(["containerapp", "job", "logs", "show", "-n", c.migrationJob, "-g", c.resourceGroup, "--execution", execution, "--container", c.migrationJob, "--tail", "100", "--format", "json"]), schemaPlan);
         }
+        await verifyControlRequirements(az, c, schemaPlan);
         const suffix = `p0-${built.sha.slice(0, 12)}`;
         await az(["containerapp", "update", ...target, "--image", built.image, "--revision-suffix", suffix, ...(c.customerLoginClientId ? ["--set-env-vars", "CW_CONNECTION_SETUP_ENABLED=true", "CW_CUSTOMER_FEATURES_ENABLED=true", `CW_PORTAL_LOGIN_CLIENT_ID=${c.customerLoginClientId}`] : []), "-o", "none"]);
         const revision = `${c.controlApi}--${suffix}`;
@@ -95,11 +102,12 @@ export async function release(action) {
         }
         if (candidate?.health !== "Healthy")
             throw new Error("candidate_not_ready");
+        await verifyControlRequirements(az, c, schemaPlan, revision);
         await az(["containerapp", "revision", "label", "add", ...target, "--revision", revision, "--label", "candidate", "--yes", "-o", "none"]);
         const domain = current.fqdn.split(".").slice(1).join(".");
         await smoke(`https://${c.controlApi}---candidate.${domain}`, "control-api");
         await smoke("https://api.monotorr.com", "mcp");
-        await writeFile(manifestPath, JSON.stringify({ ...manifest, revision, candidateSmokePassed: true, execution }) + "\n");
+        await writeFile(manifestPath, JSON.stringify({ ...manifest, revision, candidateSmokePassed: true, execution, migrationResult }) + "\n");
         return { prepared: true, revision, image: built.image };
     }
     if (!["promote", "rollback"].includes(action))
@@ -128,6 +136,10 @@ export async function release(action) {
         const impact = await assessMcpImpact(manifest.previousSha, sha);
         if (impact.impact !== "unchanged")
             throw new Error("mcp_affecting_release_requires_separate_review_and_owner_dogfood");
+    }
+    if (action === "promote") {
+        await verifyControlRequirements(az, c, manifest.schemaPlan);
+        await verifyControlRequirements(az, c, manifest.schemaPlan, revision);
     }
     if (!selected.active)
         await az(["containerapp", "revision", "activate", ...target, "--revision", revision, "-o", "none"]);

@@ -1,6 +1,6 @@
 # Feature-scoped schema readiness
 
-Status: repository-only correction; deployment remains blocked. No release image publication, live migration, infrastructure change, or billing enablement is included.
+Status: repository-only readiness and execution correction; deployment remains blocked pending review and renewed same-SHA provenance. No release image publication, live migration, infrastructure change, or billing enablement is included.
 
 ## One manifest, two uses
 
@@ -16,9 +16,31 @@ With billing OFF, control requires core schema and does not construct billing se
 
 Hosted MCP performs the same read-only history verification for core schema before opening its socket. It has no billing runtime and imports neither Stripe nor billing configuration/services to select requirements. Optional installed migrations still have their checksums checked. Existing authentication, entitlement decisions, account isolation, tool inventory and schemas are unchanged.
 
-## Migration execution is not feature-scoped
+## Feature-scoped migration execution
 
-The normal migration CLI still loads, checksum-validates and executes the entire ordered manifest, including unapplied billing migrations. The runner rejects malformed metadata, changed SQL and invalid/duplicate installed history. Runtime selection is never passed as a filtered migration list by the CLI. Existing advisory locking, transaction boundaries, history records and rollback behavior remain. No SQL file or registered checksum changes.
+One authoritative manifest and one runner serve readiness, execution and delivery. The CLI requires exactly one nonsecret execution argument: `core` or `core,billing`. Missing, malformed, duplicated or unknown requirements fail before database construction. The existing read-only `--verify-slice1` diagnostic remains separate and cannot execute migrations. No migration-number limit, skip flag, ignore-feature override or manual SQL path exists.
+
+The CLI loads **every** manifest entry and SQL file, verifies every checksum, and passes the complete loaded package plus an explicit feature set to the runner. The runner never uses a filtered package to evade optional history verification. It validates selection/metadata/SQL before connecting, acquires the existing advisory lock, begins the existing transaction, then validates all installed history under that lock to avoid a concurrent-runner race. Only missing selected migrations execute, in manifest order. A final database history read must prove all required migrations present before COMMIT. History mismatch, missing required schema or SQL failure causes rollback and sanitized failure. Existing locks, timeouts and client cleanup remain.
+
+Core is always selected. With billing disabled, missing billing migrations are explicitly deferred, not implicitly successful or recorded as installed. With valid TEST billing enabled, core and billing are selected. Installed optional migrations remain installed and checksum-validated when billing is later disabled. Execution reports `requirements`, `applied`, `appliedIds`, `deferredIds` and `installedOptionalIds`; these contain identifiers only, never SQL, credentials or raw errors.
+
+### Migration authoring invariant
+
+**Core migrations must not depend on unapplied feature-scoped schema.** A later independent core migration may execute while an earlier billing migration remains deferred. Manifest order governs the selected migrations; installed history need not be a contiguous prefix. There is no automatic dependency promotion that enables a disabled feature. Review SQL dependencies and run the complete core projection against an empty disposable database with billing schema absent. If a core migration references missing billing schema, execution fails and rolls back; fix the migration classification/design rather than broadening selection automatically.
+
+## Delivery propagation
+
+The existing `prepare-control` path and migration job remain. Production preparation inherits the existing application configuration; its existing overrides affect setup/linking, not billing. Delivery reads only nonsecret `NODE_ENV`/`CW_BILLING_ENABLED` values from the target application's template, rejects ambiguous/duplicate/secret-referenced flags, and uses the **existing compiled `billingConfig()`** policy. The reviewed image's production default applies if NODE_ENV is absent. This production-only delivery path rejects a nonproduction target and retains the existing prohibition on production billing opt-in. No Stripe key is read to select current production schema, and the migration job does not interpret its own feature flags.
+
+The release records a `schemaPlan` with the explicit selection, requirements, required/optional IDs and a fingerprint of the entire validated migration package. The immutable job image, command `node`, and arguments `dist/database/cli.js core` (for the current target) are updated and read back before starting. MCP-affecting preparation still runs the job even if no core migrations are pending. Job success alone is insufficient: its exact execution's sanitized completion event must be retrievable and match the plan. Missing/ambiguous completion evidence stops preparation without rerunning migrations. Only allowlisted completion fields are copied into `migrationResult` in the existing control/release evidence.
+
+Preparation rechecks feature selection before and after candidate creation. Promotion rechecks both application-template and prepared-revision selection against the recorded plan; MCP cutover rechecks the promoted control revision and template. Missing plans, manifest drift or feature drift fail closed before traffic/runtime mutation. The existing migration-free control-only lane additionally requires no feature expansion relative to the serving revision, alongside its unchanged full-schema, executable-impact and readiness proofs. A feature expansion cannot silently use that lane.
+
+Both existing delivery workflows compile the reviewed source locally before loading configuration guards. This neither publishes images nor adds a workflow action. Initial job rendering obtains its explicit selection from the rendered application environment. Future permitted billing enablement uses the same manifest, job and normal deployment flow; current production billing remains forbidden by unchanged product policy.
+
+## Forward-only schema and rollback
+
+Application rollback never removes migrations or optional schema and does not run the migration job. A transaction failure leaves no newly installed schema; a successful migration followed by a deployment failure leaves additive schema installed, while prior application traffic is retained. Migrations must remain compatible with the retained rollback artifact. Preserve existing production, candidate acceptance, image and rollback evidence. No down migration or automatic optional-schema removal is introduced.
 
 ## Conservative delivery remains required
 
@@ -26,10 +48,12 @@ This release is MCP-affecting: startup code/manifest requirements changed, and t
 
 The schema-compatibility parser accepts the existing legacy literal format and the explicit tagged format with known manifest helpers. It never evaluates source. It still requires exact equality of the complete manifest source and every SQL file/checksum; it does not compare only the enabled-feature subset. Changed metadata/helper source is a schema difference. Unknown metadata, extra top-level execution, malformed source and mixed/ambiguous formats are rejected.
 
-The readiness correction does **not** solve the delivery/migration-job blocker. Current MCP-affecting `prepare-control` updates and runs `connectwise-migrate`, which executes all migrations. Billing OFF does not skip that job. Because applying billing migrations is not authorized, do not invoke this path. A separately reviewed delivery decision is required before preparation; no skip flag, approval override or control-only reclassification is supplied here.
+The execution correction removes unconditional optional-migration application in source; billing OFF still does not skip the job. This is not deployment authorization. Review/commit the correction and renew immutable same-SHA build, candidate acceptance and release evidence before invoking delivery. Existing historical evidence cannot be relabeled for the new source. No guard bypass, approval override or control-only reclassification is supplied.
 
 ## Acceptance evidence
 
-Tests cover core-only readiness, missing core/feature schema, core/optional checksum corruption, malformed metadata/history, query failure, actual control and MCP entrypoint ordering, absence of partial billing exposure, full ordered migration execution, and unchanged release authorization/migration gates. PostgreSQL 18 integration uses an isolated disposable local fixture: it proves core-only readiness first, then explicitly applies feature migrations inside that fixture to verify full runner behavior. This is not a production migration.
+Tests cover core-only readiness, missing core/feature schema, core/optional checksum corruption, malformed metadata/history, query failure, actual control and MCP entrypoint ordering, absence of partial billing exposure, explicit feature-scoped ordered execution, and unchanged release authorization/migration gates. PostgreSQL 18 integration uses an isolated disposable local fixture: it proves core-only readiness first, then explicitly enables feature execution inside that fixture and disables it again while retaining installed schema. This is not a production migration.
 
 The 39 MCP read tools, zero write tools and tool schemas remain separately verified from executable-module impact. Local validation output belongs in ignored `.delivery/schema-readiness/`; it is not release provenance or authority to deploy. Unrelated local documentation and historical continuity files remain excluded.
+
+Execution-specific local validation belongs in ignored `.delivery/migration-execution/`. Genuine live migration-job command/log transport and effective permissions must be verified during the normal authorized deployment preflight; repository tests mock Azure, and do not claim live delivery occurred. If logs are unavailable after execution, stop and inspect actual history/evidence; do not blindly retry the job.

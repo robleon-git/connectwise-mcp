@@ -118,6 +118,8 @@ jobs:
         with:
           node-version: '26'
       - run: npm ci --ignore-scripts
+      - name: Compile reviewed application configuration for delivery guards
+        run: npm run build
       - name: Validate release evidence provenance before download
         if: inputs.action != 'build'
         env:

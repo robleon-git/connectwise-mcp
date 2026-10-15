@@ -9,11 +9,11 @@ export async function verifyEntitlementDatabase(control: Pool,migrator: Pool,mig
  const accountId=(await control.query("SELECT id FROM public.accounts LIMIT 1")).rows[0].id;
  const ids=[randomUUID(),randomUUID()];
  for(const [i,status]of ["active","canceled"].entries()) await control.query("INSERT INTO public.entitlements(id,account_id,source,status,starts_at,ends_at) VALUES($1,$2,'web_paid',$3,now(),NULL)",[ids[i],accountId,status]);
- await expect(migrate(migrator,migrations)).rejects.toThrow("migration_failed");
+ await expect(migrate(migrator,migrations, ["billing"])).rejects.toThrow("migration_failed");
  expect((await control.query("SELECT id FROM public.entitlements WHERE id=ANY($1::uuid[])",[ids])).rows).toHaveLength(2);
  expect((await control.query("SELECT id FROM public.schema_migrations WHERE id='0005_web_paid_entitlement'")).rows).toHaveLength(0);
  await migrator.query("DELETE FROM public.entitlements WHERE id=ANY($1::uuid[])",[ids]);
- expect((await migrate(migrator,migrations)).applied).toBe(1);
+ expect((await migrate(migrator,migrations, ["billing"])).applied).toBe(1);
  for(const source of ["trial","web_paid","comp","substack"]){
   const insert=()=>control.query("INSERT INTO public.entitlements(id,account_id,source,status,starts_at,ends_at) VALUES($1,$2,$3,'active',now(),NULL)",[randomUUID(),accountId,source]);
   if(source==="trial") await expect(insert()).rejects.toMatchObject({code:"23505"});

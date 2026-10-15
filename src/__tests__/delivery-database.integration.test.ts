@@ -35,7 +35,17 @@ describe.skipIf(process.env.CW_DATABASE_INTEGRATION !== "true")("real disposable
             await expect(bootstrapMcpReader(admin,store)).rejects.toThrow("mcp_reader_bootstrap_failed");
             migrator = new Pool({ ...local, database: "connectwise", user: "cw_migrator", password: secrets.get("cw-migration-db-password") });
             const migrations = await loadMigrations(MIGRATIONS, new URL("../../database/migrations/", import.meta.url));
-            expect((await migrate(migrator, migrations.slice(0,4))).applied).toBe(4);
+            // Authoring invariant: core runs from an empty database without optional billing schema.
+            await owner.query("CREATE DATABASE cw_core_scope_test OWNER cw_migrator");
+            const coreOnly=new Pool({...local,database:"cw_core_scope_test",user:"cw_migrator",password:secrets.get("cw-migration-db-password")});
+            try {
+                const selected=await migrate(coreOnly,migrations,[]);
+                expect(selected.appliedIds).toEqual(MIGRATIONS.filter(item=>item.requirement==="core").map(item=>item.id));
+                expect(selected.deferredIds).toEqual(MIGRATIONS.filter(item=>item.requirement==="billing").map(item=>item.id));
+                expect((await coreOnly.query("SELECT to_regclass('public.account_billing') IS NULL AS absent")).rows[0].absent).toBe(true);
+                expect(await migrationReadiness(coreOnly)).toBe(true);
+            } finally {await coreOnly.end();await owner.query("DROP DATABASE cw_core_scope_test WITH (FORCE)");}
+            expect((await migrate(migrator, migrations.slice(0,4), ["billing"])).applied).toBe(4);
             runtime = new Pool({ ...local, database: "connectwise", user: "cw_control", password: secrets.get("cw-control-db-password") });
             expect((await runtime.query("SELECT id FROM public.schema_migrations")).rows).toHaveLength(4);
             await verifyCustomerDatabase(runtime, migrator);
@@ -58,9 +68,15 @@ describe.skipIf(process.env.CW_DATABASE_INTEGRATION !== "true")("real disposable
             expect(await migrationReadiness(mcp)).toBe(true);
             expect(await migrationReadiness(runtime,["billing"])).toBe(false);
             expect((await runtime.query("SELECT to_regclass('public.account_billing') IS NULL AS absent")).rows[0].absent).toBe(true);
-            // Actual explicit migration execution still applies BOTH feature migrations, in order.
-            expect((await migrate(migrator,migrations)).applied).toBe(2);
+            // Full-package validation with core selection defers missing billing schema explicitly.
+            const coreResult=await migrate(migrator,migrations,[]);
+            expect(coreResult).toMatchObject({applied:0,requirements:["core"],deferredIds:MIGRATIONS.filter(m=>m.requirement==="billing").map(m=>m.id)});
+            expect((await runtime.query("SELECT to_regclass('public.account_billing') IS NULL AS absent")).rows[0].absent).toBe(true);
+            // Enabling billing uses the same runner and the complete package.
+            expect((await migrate(migrator,migrations, ["billing"])).applied).toBe(2);
             expect(await migrationReadiness(runtime,["billing"])).toBe(true);
+            const disabledAgain=await migrate(migrator,migrations,[]);
+            expect(disabledAgain).toMatchObject({applied:0,deferredIds:[],installedOptionalIds:MIGRATIONS.filter(m=>m.requirement==="billing").map(m=>m.id)});
             expect(await migrationReadiness(mcp)).toBe(true);
             const optional=MIGRATIONS.find(m=>m.requirement==="billing")!;
             await migrator.query("UPDATE public.schema_migrations SET checksum=$1 WHERE id=$2",["0".repeat(64),optional.id]);
@@ -98,9 +114,9 @@ describe.skipIf(process.env.CW_DATABASE_INTEGRATION !== "true")("real disposable
             expect((await pool.query("SHOW server_version")).rows[0].server_version).toMatch(/^18\./);
             await pool.query("DROP TABLE IF EXISTS public.schema_migrations");
             const migrations = await loadMigrations(MIGRATIONS.slice(0,1), new URL("../../database/migrations/", import.meta.url));
-            const results = await Promise.all([migrate(pool, migrations), migrate(pool, migrations)]);
+            const results = await Promise.all([migrate(pool, migrations, ["billing"]), migrate(pool, migrations, ["billing"])]);
             expect(results.reduce((n, r) => n + r.applied, 0)).toBe(1);
-            expect((await migrate(pool, migrations)).applied).toBe(0);
+            expect((await migrate(pool, migrations, ["billing"])).applied).toBe(0);
             await pool.query("DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='cw_control_test') THEN CREATE ROLE cw_control_test; END IF; END $$");
             await pool.query("GRANT USAGE ON SCHEMA public TO cw_control_test; GRANT SELECT ON public.schema_migrations TO cw_control_test");
             const client = await pool.connect();
@@ -114,7 +130,7 @@ describe.skipIf(process.env.CW_DATABASE_INTEGRATION !== "true")("real disposable
                 client.release();
             }
             await pool.query("UPDATE public.schema_migrations SET checksum=$1", ["a".repeat(64)]);
-            await expect(migrate(pool, migrations)).rejects.toThrow("migration_failed");
+            await expect(migrate(pool, migrations, ["billing"])).rejects.toThrow("migration_failed");
         }
         finally {
             await pool.query("DROP TABLE IF EXISTS public.schema_migrations").catch(() => { });

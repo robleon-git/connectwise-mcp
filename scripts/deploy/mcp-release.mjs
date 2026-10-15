@@ -1,3 +1,4 @@
+import { verifyControlRequirements } from "./migration-features.mjs";
 // Explicit MCP-affecting delivery only. The control-only release/impact guard is unchanged.
 import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
@@ -89,6 +90,7 @@ export async function mcpRelease(action,inputs={},dependencies={}) {
   let stage="release";
   try {
   const call=dependencies.az||mcpAz,run=dependencies.execute||execute,read=dependencies.readFile||readFile,write=dependencies.writeFile||writeFile;
+  const verifyFeatures=dependencies.verifyControlRequirements||verifyControlRequirements;
   const c=await (dependencies.configuration||configuration)();
   const head=(await run("git",["rev-parse","HEAD"])).stdout.trim();
   if(!shaPattern.test(head)||inputs.reviewedSha!==head)throw new Error("reviewed_source_mismatch");
@@ -198,6 +200,7 @@ export async function mcpRelease(action,inputs={},dependencies={}) {
       await new Promise(resolve=>setTimeout(resolve,2000));
     }
     if(prepared?.health!=="Healthy"||prepared.active!==true||!prepared.fqdn)throw new Error("control_candidate_not_ready");
+    await verifyFeatures(call,c,control.schemaPlan,preparedRevision);
     await (dependencies.smoke||smoke)(`https://${prepared.fqdn}`,"control-api");
     state.control={...control,revision:preparedRevision};state.controlPromoted=false;
     await save(state);return {controlPrepared:true};
@@ -209,6 +212,8 @@ export async function mcpRelease(action,inputs={},dependencies={}) {
     if(state.control.condition&&canonicalJson(condition)!==canonicalJson(state.control.condition))throw new Error("control_condition_changed");
     const selected=JSON.parse(await call(["containerapp","revision","show","-n",c.controlApi,"-g",c.resourceGroup,"--revision",state.control.revision,"--query","{health:properties.healthState,image:properties.template.containers[0].image,active:properties.active,fqdn:properties.fqdn}","-o","json"]));
     if(selected.health!=="Healthy"||selected.image!==state.controlImage||selected.active!==true||!selected.fqdn)throw new Error("control_candidate_not_ready");
+    await verifyFeatures(call,c,state.control.schemaPlan);
+    await verifyFeatures(call,c,state.control.schemaPlan,state.control.revision);
     const target=["-n",c.controlApi,"-g",c.resourceGroup];
     const previous=JSON.parse(await call(["containerapp","revision","show",...target,"--revision",state.control.previousRevision,"--query","{health:properties.healthState,image:properties.template.containers[0].image,active:properties.active}","-o","json"]));
     if(previous.health!=="Healthy"||previous.image!==state.control.previousImage||previous.active!==true)throw new Error("control_rollback_not_ready");
@@ -271,6 +276,9 @@ export async function mcpRelease(action,inputs={},dependencies={}) {
     if(!state.controlPromoted||!state.acceptance||state.acceptance.image!==state.mcpImage)throw new Error("candidate_acceptance_missing");
     acceptance(Object.fromEntries(ACCEPTANCE_KEYS.map(k=>[k,state.acceptance[k]])));
     if(await candidateReady()!==state.acceptance.revision)throw new Error("accepted_candidate_changed");
+    if(!state.control?.revision)throw new Error("control_features_unproven");
+    await verifyFeatures(call,c,state.control.schemaPlan,state.control.revision);
+    await verifyFeatures(call,c,state.control.schemaPlan);
     await publicSmoke();state.cutoverStarted=true;await save(state); // Retain rollback baseline BEFORE mutation.
     await call(["containerapp","update",...target,"--image",state.mcpImage,"--revision-suffix",`s3-${head.slice(0,12)}`,"--set-env-vars",...mcpEnvironment(c).map(e=>`${e.name}=${e.value}`),"--remove-env-vars","CW_CONFIG_SOURCE","CW_MANAGE_URL","CW_MANAGE_COMPANY_ID","CW_MANAGE_CLIENT_ID","CW_MANAGE_PUBLIC_KEY","CW_MANAGE_PRIVATE_KEY","MCP_APPROVED_USER_ID","MCP_APPROVED_USER_CLAIM","-o","none"]);
     stage="cutover_readiness";

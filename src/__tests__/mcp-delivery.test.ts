@@ -1,3 +1,5 @@
+// @ts-expect-error Delivery script has no declarations.
+import { migrationPlan } from "../../scripts/deploy/migration-features.mjs";
 import {beforeEach,describe,expect,it,vi} from "vitest";
 import {readFile} from "node:fs/promises";
 // @ts-expect-error Delivery script has no declarations.
@@ -17,12 +19,15 @@ const c={subscriptionId:"08a97e42-1e1f-4f33-95dc-36af13337091",sharedResourceGro
 const image=`${c.registry}.azurecr.io/connectwise-mcp@sha256:${digest}`,oldImage=`${c.registry}.azurecr.io/connectwise-mcp@sha256:${oldDigest}`,controlImage=`${c.registry}.azurecr.io/connectwise-control-api@sha256:${digest}`;
 const template={containers:[{image:oldImage,env:[{name:"LEGACY_PRIVATE_VALUE",value:"DO-NOT-PERSIST-SECRET"}]}]},ingress={fqdn:"pilot.example",traffic:[{latestRevision:true,weight:100}]};
 const before={fingerprintVersion:FINGERPRINT_VERSION,revision:"connectwise-mcp-pilot--0000005",image:oldImage,mode:"Single",traffic:ingress.traffic,probeCount:0,preservedFingerprint:preservedConfiguration({template,ingress}),configFingerprint:configurationFingerprint({template,ingress})};
-interface State {fingerprintVersion:string;sha:string;mcpImage:string;controlImage:string;baseline:typeof before;controlPromoted:boolean;candidate:{name:string;operatorCidr:string};acceptance?:Record<string,string|boolean>;cutoverStarted?:boolean}
+interface State {fingerprintVersion:string;sha:string;mcpImage:string;controlImage:string;baseline:typeof before;controlPromoted:boolean;control?:object;candidate:{name:string;operatorCidr:string};acceptance?:Record<string,string|boolean>;cutoverStarted?:boolean}
 let state:State;
 let az=vi.fn(async(_args:string[])=>""),execute=vi.fn(async(_name:string,_args:string[])=>({stdout:""})),write=vi.fn(async(_path:string,_body:string)=>{}),smoke=vi.fn(async(_origin:string,_kind:string)=>({smokePassed:true}));
-beforeEach(()=>{
- state={fingerprintVersion:FINGERPRINT_VERSION,sha,mcpImage:image,controlImage,baseline:{...before},controlPromoted:true,candidate:{name:MCP_CANDIDATE,operatorCidr:"8.8.8.8/32"},acceptance:{...Object.fromEntries(ACCEPTANCE_KEYS.map((k:string)=>[k,true])),revision:MCP_CANDIDATE+"--candidate",image}};
+let schemaPlan: Awaited<ReturnType<typeof migrationPlan>>;
+beforeEach(async()=>{
+ schemaPlan=await migrationPlan("core");
+ state={fingerprintVersion:FINGERPRINT_VERSION,sha,mcpImage:image,controlImage,baseline:{...before},controlPromoted:true,control:{revision:"connectwise-control-api--s3-link-"+sha.slice(0,12),schemaPlan},candidate:{name:MCP_CANDIDATE,operatorCidr:"8.8.8.8/32"},acceptance:{...Object.fromEntries(ACCEPTANCE_KEYS.map((k:string)=>[k,true])),revision:MCP_CANDIDATE+"--candidate",image}};
  az=vi.fn(async(args:string[])=>{
+  if(args.some(arg=>arg.includes("containers[].{env:")))return JSON.stringify([{env:[{name:"NODE_ENV",value:"production"},{name:"CW_BILLING_ENABLED",value:"false"}]}]);
   if(productionRead(args))return productionArm();
   const selected=revisionRead(args);
   if(selected)return revisionArm(selected);
@@ -56,10 +61,11 @@ const schema={migrationCount:4,migrationFingerprint:oldDigest};
 function controlState(){
  const revision="connectwise-control-api--s3-link-"+sha.slice(0,12),previousRevision="connectwise-control-api--prior";
  const condition={kind:"control-only",previousSha:oldSha,sha,moduleCount:39,moduleFingerprint:digest,protectedInputsEqual:true,...schema};
- Object.assign(state,{controlPromoted:false,control:{sha,image:controlImage,previousImage:controlImage,previousSha:oldSha,previousRevision,revision,condition}});
+ Object.assign(state,{controlPromoted:false,control:{sha,image:controlImage,previousImage:controlImage,previousSha:oldSha,previousRevision,revision,condition,schemaPlan}});
  let traffic=[{revisionName:previousRevision,weight:100}];
  const original=az.getMockImplementation()!;
  az.mockImplementation(async args=>{
+  if(args.some(arg=>arg.includes("containers[].{env:")))return original(args);
   if(args.includes(c.controlApi)){
    if(args.includes("traffic")&&args.includes("set")){traffic=[{revisionName:args[args.indexOf("--revision-weight")+1].split("=")[0],weight:100}];return "";}
    if(args.includes("revision")&&args.includes("show"))return JSON.stringify({health:"Healthy",active:true,image:controlImage,fqdn:"connectwise-control-api--candidate.domain.eastus.azurecontainerapps.io"});
@@ -123,7 +129,7 @@ describe("computed Slice 3 control-only promotion",()=>{
   expect(mutations()).toHaveLength(0);
  });
  it("ambiguous initial traffic fails before mutation",async()=>{
-  controlState();const original=az.getMockImplementation()!;az.mockImplementation(async args=>args.includes(c.controlApi)&&args.includes("show")&&!args.includes("revision")?JSON.stringify({mode:"Multiple",fqdn:"control.invalid",traffic:[{latestRevision:true,weight:100}]}):original(args));
+  controlState();const original=az.getMockImplementation()!;az.mockImplementation(async args=>args.includes(c.controlApi)&&args.includes("show")&&!args.includes("revision")&&!args.some(arg=>arg.includes("containers[].{env:"))?JSON.stringify({mode:"Multiple",fqdn:"control.invalid",traffic:[{latestRevision:true,weight:100}]}):original(args));
   await expect(mcpRelease("promote-control",input("promote-control"),controlDependencies())).rejects.toThrow("control_traffic_unconfirmed");expect(mutations()).toHaveLength(0);
  });
  it("failed post-promotion smoke restores the recorded prior revision and does not mark promotion complete",async()=>{
@@ -415,7 +421,7 @@ describe("bounded exact MCP cutover and recovery readiness",()=>{
   vi.useFakeTimers();try{
    const deps=sequence("cutover",[{}]);const original=az.getMockImplementation()!;
    az.mockImplementation(async args=>revisionRead(args)===cutoverRevision?new Promise<string>(()=>{}):original(args));
-   const promise=mcpRelease("cutover",input("cutover",flags),deps).catch((e:unknown)=>e);
+   const promise=mcpRelease("cutover",input("cutover",flags),{...deps,verifyControlRequirements:vi.fn()}).catch((e:unknown)=>e);
    await vi.advanceTimersByTimeAsync(READINESS_TIMEOUT_MS);
    expect(releaseDiagnostic(await promise).category).toBe("cutover_readiness_timeout");
   }finally{vi.useRealTimers();}
@@ -487,5 +493,26 @@ describe("bounded exact MCP cutover and recovery readiness",()=>{
  });
  it.each([false,undefined])("rollback still requires explicit emergency approval: %s",async approved=>{
   const deps=sequence("rollback",[{}]);await expect(mcpRelease("rollback",input("rollback",{emergencyPilotRollbackApproved:approved}),deps)).rejects.toThrow("temporary_prelaunch_rollback_approval_required");expect(mutations()).toHaveLength(0);
+ });
+});
+
+describe("feature selection retained through promotion and cutover",()=>{
+ it("records a prepared control schema plan without altering MCP acceptance",async()=>{
+  controlState();const accepted=structuredClone(state.acceptance);
+  const control={sha,image:controlImage,previousSha:oldSha,schemaPlan};
+  const deps={...controlDependencies(),controlRelease:vi.fn(),readFile:async(path:string)=>JSON.stringify(path.endsWith("control-release.json")?control:state)};
+  await expect(mcpRelease("prepare-control",input("prepare-control",{linkingClientId:"approved-public-client"}),deps)).resolves.toMatchObject({controlPrepared:true});
+  const saved=JSON.parse(write.mock.calls.at(-1)![1]);expect(saved.control.schemaPlan).toEqual(schemaPlan);expect(saved.acceptance).toEqual(accepted);
+ });
+ it("control promotion rejects reviewed feature-plan drift before any live mutation",async()=>{
+  controlState();Object.assign(state.control!,{schemaPlan:{...schemaPlan,selection:"core,billing"}});
+  await expect(mcpRelease("promote-control",input("promote-control"),controlDependencies())).rejects.toThrow("control_features_changed");expect(mutations()).toHaveLength(0);
+ });
+ it("MCP cutover rejects missing or drifted feature evidence before its runtime update",async()=>{
+  for(const plan of [undefined,{...schemaPlan,manifestFingerprint:"0".repeat(64)}]){
+   Object.assign(state.control!,{schemaPlan:plan});
+   await expect(mcpRelease("cutover",input("cutover",{ownerBaselineConnected:true,baselineReadToolsVerified:true,emergencyPilotRollbackApproved:true}),dependencies())).rejects.toThrow("control_features_changed");
+   expect(mutations()).toHaveLength(0);
+  }
  });
 });

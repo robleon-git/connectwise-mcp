@@ -1,3 +1,4 @@
+import { controlRequirements, migrationJobArgs } from "./migration-features.mjs";
 // Render exactly the two NEW product compute resources for review; no Azure write.
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
@@ -29,7 +30,7 @@ export function computeResources(c, image, probes) {
     const container = { name: c.controlApi, image, resources: { cpu: 0.5, memory: "1Gi" } };
     const registries = [{ server: `${c.registry}.azurecr.io`, identity: pull }];
     const api = { location: c.location, identity, properties: { managedEnvironmentId: environment, configuration: { activeRevisionsMode: "Multiple", registries, ingress: { external: true, allowInsecure: false, targetPort: 8080, transport: "auto", traffic: [{ latestRevision: true, weight: 100 }] } }, template: { containers: [{ ...container, env: [...env("cw_control"), { name: "CW_CONTROL_PORT", value: "8080" }, { name: "CW_CUSTOMER_FEATURES_ENABLED", value: "false" }], probes }], scale: { minReplicas: 1, maxReplicas: 1 } } } };
-    const job = { location: c.location, identity, properties: { environmentId: environment, configuration: { triggerType: "Manual", replicaTimeout: 180, replicaRetryLimit: 0, manualTriggerConfig: { parallelism: 1, replicaCompletionCount: 1 }, registries }, template: { containers: [{ ...container, name: c.migrationJob, env: env("cw_migrator"), command: ["node"], args: ["dist/database/cli.js"] }] } } };
+    const job = { location: c.location, identity, properties: { environmentId: environment, configuration: { triggerType: "Manual", replicaTimeout: 180, replicaRetryLimit: 0, manualTriggerConfig: { parallelism: 1, replicaCompletionCount: 1 }, registries }, template: { containers: [{ ...container, name: c.migrationJob, env: env("cw_migrator"), command: ["node"], args: migrationJobArgs({selection:controlRequirements(Object.fromEntries(api.properties.template.containers[0].env.map(entry => [entry.name, entry.value])))}) }] } } };
     return { api, job };
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

@@ -74,6 +74,7 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '26'
+      - run: npm ci --ignore-scripts && npm run build
       - uses: Azure/login@8216e11d8cd9b42fe925c852af8e76311ff067ac
         with:
           client-id: ${{ vars.CW_AZURE_DEPLOY_CLIENT_ID }}

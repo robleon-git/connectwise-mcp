@@ -120,7 +120,7 @@ describe("migration foundation", () => {
         });
         const release = vi.fn();
         const loaded = await loadMigrations(MIGRATIONS.slice(0,1), new URL("../../database/migrations/", import.meta.url));
-        await expect(migrate({ connect: async () => ({ query, release }) } as never, loaded)).rejects.toThrow(/^migration_failed$/);
+        await expect(migrate({ connect: async () => ({ query, release }) } as never, loaded, ["billing"])).rejects.toThrow(/^migration_failed$/);
         expect(query.mock.calls.map(c => c[0])).toContain("ROLLBACK");
         expect(query.mock.calls.at(-1)?.[0]).toContain("pg_advisory_unlock");
         expect(release).toHaveBeenCalledOnce();
