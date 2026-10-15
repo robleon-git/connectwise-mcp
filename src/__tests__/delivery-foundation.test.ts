@@ -5,7 +5,7 @@ import { createControlApi } from "../control-plane/server.js";
 import { databasePool } from "../database/pool.js";
 import { databaseConfig } from "../database/config.js";
 import { migrate, loadMigrations } from "../database/migrationRunner.js";
-import { MIGRATIONS } from "../database/migrationManifest.js";
+import { MIGRATIONS, migrationReadiness } from "../database/migrationManifest.js";
 // @ts-expect-error Local operator scripts use JavaScript.
 import { smoke } from "../../scripts/deploy/smoke.mjs";
 // @ts-expect-error Local operator scripts use JavaScript.
@@ -49,6 +49,12 @@ describe("Phase 0 health-only control API", () => {
         finally {
             await s.close();
         }
+    });
+    it("real readiness HTTP responses use feature-scoped history and reject corrupt optional history",async()=>{
+        let rows:{id:string;checksum:string}[]=MIGRATIONS.filter(m=>m.requirement==="core").map(({id,checksum})=>({id,checksum}));
+        const s=await api(()=>migrationReadiness({query:async()=>({rows})}));
+        try {expect((await fetch(s.url+"/ready")).status).toBe(200);rows=[...rows,{id:MIGRATIONS[5].id,checksum:"0".repeat(64)}];expect((await fetch(s.url+"/ready")).status).toBe(503);}
+        finally {await s.close();}
     });
     it("all product and MCP routes remain unavailable regardless of supplied data", async () => {
         const ready = vi.fn(async () => true);
@@ -105,7 +111,7 @@ describe("database config", () => {
 });
 describe("migration foundation", () => {
     it("loads immutable SQL from the manifest", async () => { const loaded = await loadMigrations(MIGRATIONS, new URL("../../database/migrations/", import.meta.url)); expect(loaded).toHaveLength(7); expect(loaded[1].id).toBe("0002_customer_foundation"); expect(loaded[0].sql).not.toMatch(/CREATE TABLE.*(?:users|accounts|entitlements)/i); });
-    it("rejects checksum changes before connection", async () => { await expect(loadMigrations([{ ...MIGRATIONS[0], checksum: "bad" }], new URL("../../database/migrations/", import.meta.url))).rejects.toThrow("migration_checksum_mismatch"); });
+    it("rejects checksum changes before connection", async () => { await expect(loadMigrations([{ ...MIGRATIONS[0], checksum: "0".repeat(64) }], new URL("../../database/migrations/", import.meta.url))).rejects.toThrow("migration_checksum_mismatch"); });
     it("rolls back and releases lock/client without raw error leakage", async () => {
         const query = vi.fn(async (sql: string) => {
             if (sql.startsWith("CREATE TABLE"))
@@ -113,7 +119,8 @@ describe("migration foundation", () => {
             return { rows: [], command: "SELECT", rowCount: 0, oid: 0, fields: [] };
         });
         const release = vi.fn();
-        await expect(migrate({ connect: async () => ({ query, release }) } as never, [])).rejects.toThrow(/^migration_failed$/);
+        const loaded = await loadMigrations(MIGRATIONS.slice(0,1), new URL("../../database/migrations/", import.meta.url));
+        await expect(migrate({ connect: async () => ({ query, release }) } as never, loaded)).rejects.toThrow(/^migration_failed$/);
         expect(query.mock.calls.map(c => c[0])).toContain("ROLLBACK");
         expect(query.mock.calls.at(-1)?.[0]).toContain("pg_advisory_unlock");
         expect(release).toHaveBeenCalledOnce();

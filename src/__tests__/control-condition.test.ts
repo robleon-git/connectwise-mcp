@@ -1,4 +1,5 @@
 import {describe,it,expect,vi} from "vitest";
+import {readFile} from "node:fs/promises";
 import {createHash} from "node:crypto";
 // @ts-expect-error Delivery script has no declarations.
 import {controlCondition,requireControlOnlyImpact,schemaCompatibility,requireControlTraffic} from "../../scripts/deploy/control-condition.mjs";
@@ -30,6 +31,27 @@ describe("computed control-only evidence",()=>{
   {[after+":tree"]:tree.replace("100644","120000")},
   {[after+":tree"]:""},
  ])("rejects changed/invalid migration inputs %j",async changes=>{await expect(schemaCompatibility(before,after,git(changes))).rejects.toThrow("control_only_schema_unproven");});
+ it("understands the tagged literal format and helpers without executing source",async()=>{
+  const tagged=manifest.replace('checksum:', 'requirement:"core",checksum:').replace('}]);','}] as const);')+'\nexport function migrationHistoryReady(){throw new Error("must_not_execute");}';
+  const run=git({[before+":src/database/migrationManifest.ts"]:tagged,[after+":src/database/migrationManifest.ts"]:tagged});
+  await expect(schemaCompatibility(before,after,run)).resolves.toMatchObject({migrationCount:1});
+ });
+ it("preserves full-source equality for metadata and helpers",async()=>{
+  const tagged=manifest.replace('checksum:', 'requirement:"core",checksum:');
+  for(const changed of [tagged,manifest+'\nexport function migrationHistoryReady(){return true;}'])await expect(schemaCompatibility(before,after,git({[after+":src/database/migrationManifest.ts"]:changed}))).rejects.toThrow('control_only_schema_unproven');
+ });
+ it.each(['unknown','CORE','optional'])('rejects unknown classification %s even in identical snapshots',async value=>{
+  const tagged=manifest.replace('checksum:', `requirement:"${value}",checksum:`);await expect(schemaCompatibility(before,after,git({[before+":src/database/migrationManifest.ts"]:tagged,[after+":src/database/migrationManifest.ts"]:tagged}))).rejects.toThrow('control_only_schema_unproven');
+ });
+ it.each(['\nMIGRATIONS[0].requirement="billing";','\nexport const extra=true;','\nexport function unexpected(){return true;}'])('rejects extra executable top-level source %s',async extra=>{
+  const source=manifest+extra;await expect(schemaCompatibility(before,after,git({[before+":src/database/migrationManifest.ts"]:source,[after+":src/database/migrationManifest.ts"]:source}))).rejects.toThrow('control_only_schema_unproven');
+ });
+ it("parses the actual complete authoritative manifest and checks every SQL file",async()=>{
+  const source=await readFile('src/database/migrationManifest.ts','utf8');const files=source.matchAll(/file: "([a-z0-9_]+\.sql)"/g);const entries=[...files].map(x=>x[1]);
+  const directory=entries.map(file=>`100644 blob ${"d".repeat(40)}\tdatabase/migrations/${file}`).join('\n');
+  const run=async(_cmd:string,args:string[])=>({stdout:args[0]==='ls-tree'?directory:args[1].endsWith('migrationManifest.ts')?source:await readFile(args[1].split(':')[1],'utf8')});
+  await expect(schemaCompatibility(before,after,run)).resolves.toMatchObject({migrationCount:7});
+ });
  it("fails closed on missing source or failed Git inspection",async()=>{
   await expect(schemaCompatibility(before,after,async()=>{throw new Error("missing");})).rejects.toThrow("control_only_schema_unproven");
   await expect(controlCondition("missing",after)).rejects.toThrow("control_source_unknown");

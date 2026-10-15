@@ -42,6 +42,11 @@ describe('executable MCP closure comparison',()=>{
  it.each(['const target="./api-client.js";export const load=()=>import(target);','import {missing} from "./absent.js";export {missing};','export const value: string=123;','export const source = eval("true");'])('fails closed on unsupported/invalid impact',source=>{
   const before=fixture();expect(compareMcpSnapshots(before,{...before,'src/index.ts':source}).impact).toBe('unknown');
  });
+ it('classifies feature-aware startup/manifest changes as executable MCP changes, without a billing exception',()=>{
+  const before={...fixture(),'src/index.ts':'import {ready} from "./database/migrationManifest.js";export {ready};','src/database/migrationManifest.ts':'export const ready=()=>false;'};
+  const after={...before,'src/database/migrationManifest.ts':'export const ready=()=>true;'};
+  expect(compareMcpSnapshots(before,after)).toMatchObject({impact:'changed',changedOutputs:['dist/database/migrationManifest.js']});
+ });
  it('fails closed on missing baseline inputs or unavailable Git revisions',async()=>{
   const before=fixture();const missing={...before};delete (missing as Record<string,string>)['Dockerfile'];expect(compareMcpSnapshots(missing,before).impact).toBe('unknown');
   expect((await assessMcpImpact('not-a-sha','also-not-a-sha')).impact).toBe('unknown');

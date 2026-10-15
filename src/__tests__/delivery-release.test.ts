@@ -50,6 +50,18 @@ describe("Phase 0 control-only release failure gates", () => {
         const original=mocks.az.getMockImplementation()!;mocks.az.mockImplementation(async(args:string[])=>args.includes("show")&&args.includes("properties.configuration.ingress.traffic")?JSON.stringify([{revisionName:"connectwise-control-api--previous",weight:100}]):original(args));
         await expect(release("prepare-slice3")).rejects.toThrow("migration_not_succeeded");expect(mocks.az.mock.calls.some(c=>c[0].includes("job")&&c[0].includes("start"))).toBe(true);
     });
+    it("billing OFF does not bypass the MCP-affecting migration job or its failure gate",async()=>{
+        vi.stubEnv("CW_BILLING_ENABLED","false");
+        try {
+            mocks.condition.mockResolvedValue({kind:"mcp-affecting",previousSha:previous,sha});
+            const original=mocks.az.getMockImplementation()!;
+            mocks.az.mockImplementation(async(args:string[])=>args.includes("show")&&args.includes("properties.configuration.ingress.traffic")?JSON.stringify([{revisionName:"connectwise-control-api--previous",weight:100}]):original(args));
+            await expect(release("prepare-slice3")).rejects.toThrow("migration_not_succeeded");
+            expect(mocks.az.mock.calls.some(c=>c[0].includes("job")&&c[0].includes("update"))).toBe(true);
+            expect(mocks.az.mock.calls.some(c=>c[0].includes("job")&&c[0].includes("start"))).toBe(true);
+            expect(mocks.az.mock.calls.some(c=>c[0][0]==="containerapp"&&c[0][1]==="update")).toBe(false);
+        } finally {vi.unstubAllEnvs();}
+    });
     it("dirty source cannot trigger image build or app/job mutation", async () => { mocks.execute.mockResolvedValue({ stdout: " M package.json" }); await expect(release("prepare")).rejects.toThrow("dirty_release_source"); expect(mocks.az.mock.calls.some(c => c[0].includes("update"))).toBe(false); });
     it("failed migration prevents candidate and promotion; rollback evidence saved first", async () => { await expect(release("prepare")).rejects.toThrow("migration_not_succeeded"); expect(mocks.writeFile).toHaveBeenCalled(); expect(mocks.az.mock.calls.some(c => c[0][0] === "containerapp" && c[0][1] === "update")).toBe(false); expect(mocks.smoke).not.toHaveBeenCalled(); });
     it("MCP-affecting source cannot silently promote through this workflow", async () => { mocks.impact.mockResolvedValue({impact:"changed",changedOutputs:["dist/auth/descope-mcp.js"]}); await expect(release("promote")).rejects.toThrow("mcp_affecting_release_requires_separate_review_and_owner_dogfood"); expect(mocks.az.mock.calls.some(c => c[0].includes("traffic"))).toBe(false); });

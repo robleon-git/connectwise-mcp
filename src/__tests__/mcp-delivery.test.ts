@@ -117,6 +117,11 @@ describe("computed Slice 3 control-only promotion",()=>{
   controlState();Object.assign(state,{control:{...(state as unknown as {control:object}).control,condition:{kind:"mcp-affecting",previousSha:oldSha,sha}}});
   await expect(mcpRelease("promote-control",input("promote-control"),{...dependencies(),assessMcpImpact:async()=>({impact:"changed"})})).resolves.toMatchObject({controlPromoted:true});
  });
+ it("schema readiness is not candidate acceptance or cutover authorization",async()=>{
+  state.acceptance=undefined;
+  await expect(mcpRelease("cutover",input("cutover",{ownerBaselineConnected:true,baselineReadToolsVerified:true,emergencyPilotRollbackApproved:true}),dependencies())).rejects.toThrow("candidate_acceptance_missing");
+  expect(mutations()).toHaveLength(0);
+ });
  it("ambiguous initial traffic fails before mutation",async()=>{
   controlState();const original=az.getMockImplementation()!;az.mockImplementation(async args=>args.includes(c.controlApi)&&args.includes("show")&&!args.includes("revision")?JSON.stringify({mode:"Multiple",fqdn:"control.invalid",traffic:[{latestRevision:true,weight:100}]}):original(args));
   await expect(mcpRelease("promote-control",input("promote-control"),controlDependencies())).rejects.toThrow("control_traffic_unconfirmed");expect(mutations()).toHaveLength(0);

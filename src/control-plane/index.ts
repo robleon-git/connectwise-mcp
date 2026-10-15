@@ -6,7 +6,7 @@ import { billingCustomerRoutes,billingWebhookRoutes } from "../billing/routes.js
 import { billingWorker } from "../billing/worker.js";
 import { createServer } from "node:http";
 import { databasePool } from "../database/pool.js";
-import { MIGRATIONS } from "../database/migrationManifest.js";
+import { migrationReadiness } from "../database/migrationManifest.js";
 import { ConnectionStore } from "../connections/store.js";
 import { ConnectionService } from "../connections/service.js";
 import { CustomerStore } from "./auth/store.js";
@@ -29,6 +29,10 @@ try {
         throw new Error();
     pool = databasePool(process.env);
     const db = pool;
+    const requiredFeatures = billingSettings ? ["billing"] as const : [];
+    const checkSchema = () => migrationReadiness(db, requiredFeatures);
+    // Billing must not expose routes/services or start a worker against incomplete billing schema.
+    if (billingSettings && !await checkSchema()) throw new Error("control_schema_unavailable");
     if(process.env.CW_CONNECTION_SETUP_ENABLED && !["true","false"].includes(process.env.CW_CONNECTION_SETUP_ENABLED))throw new Error();
     if(process.env.CW_CONNECTION_SETUP_ENABLED==="true" && process.env.CW_CUSTOMER_FEATURES_ENABLED!=="true")throw new Error();
     const browser = process.env.CW_CUSTOMER_FEATURES_ENABLED === "true" ? await microsoftProvider(process.env) : undefined;
@@ -39,13 +43,7 @@ try {
     const billing=billingSettings ? new BillingService(billingSettings,new BillingStore(db),new StripeBillingProvider(billingSettings)) : undefined;
     const ai = linking && browser ? mcpLinkRoutes(customers,new McpLinkStore(db,linking.resource.issuer),linking.provider,browser.flowKey) : undefined;
     const customer = browser ? customerRoutes(new CustomerStore(db), browser.provider, browser.flowKey,{service:new ConnectionService(new ConnectionStore(db)),enabled:process.env.CW_CONNECTION_SETUP_ENABLED==="true"},ai,billing ? billingCustomerRoutes(customers,billing) : undefined) : undefined;
-    const { app, drain } = createControlApi(async () => {
-        const result = await db.query<{
-            id: string;
-            checksum: string;
-        }>("SELECT id, checksum FROM public.schema_migrations ORDER BY id");
-        return MIGRATIONS.every(expected => result.rows.some(row => row.id === expected.id && row.checksum === expected.checksum));
-    }, customer,billing ? billingWebhookRoutes(billing) : undefined);
+    const { app, drain } = createControlApi(checkSchema, customer,billing ? billingWebhookRoutes(billing) : undefined);
     const server = createServer(app);
     await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(port, "0.0.0.0", resolve); });
     const worker=billing ? billingWorker(billing) : undefined;

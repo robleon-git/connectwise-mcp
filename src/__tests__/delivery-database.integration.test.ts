@@ -11,7 +11,7 @@ import { verifyMcpDatabase } from "./fixtures/mcp-database.js";
 import { MCP_DATABASE_LIMITS } from "../database/pool.js";
 import { verifyBillingCustomerDatabase } from "./fixtures/billing-customer-database.js";
 import { verifyBillingDatabase } from "./fixtures/billing-database.js";
-import { MIGRATIONS } from "../database/migrationManifest.js";
+import { MIGRATIONS, migrationReadiness } from "../database/migrationManifest.js";
 describe.skipIf(process.env.CW_DATABASE_INTEGRATION !== "true")("real disposable PostgreSQL 18 migrations", () => {
     it("bootstraps a private-job-shaped non-superuser admin, migrates, and rejects runtime administration", async () => {
         if (process.env.CW_DB_HOST !== "127.0.0.1" || process.env.CW_DB_NAME !== "cw_delivery_test") throw new Error("disposable_database_required");
@@ -53,7 +53,19 @@ describe.skipIf(process.env.CW_DATABASE_INTEGRATION !== "true")("real disposable
             } finally {await locker.query("ROLLBACK");locker.release();}
             await verifyMcpDatabase(runtime,mcp,migrator);
             expect((await mcp.query("SELECT id FROM public.schema_migrations")).rows).toHaveLength(5);
+            // Core-only production-shaped schema supports both runtimes without installing disabled billing.
+            expect(await migrationReadiness(runtime)).toBe(true);
+            expect(await migrationReadiness(mcp)).toBe(true);
+            expect(await migrationReadiness(runtime,["billing"])).toBe(false);
+            expect((await runtime.query("SELECT to_regclass('public.account_billing') IS NULL AS absent")).rows[0].absent).toBe(true);
+            // Actual explicit migration execution still applies BOTH feature migrations, in order.
             expect((await migrate(migrator,migrations)).applied).toBe(2);
+            expect(await migrationReadiness(runtime,["billing"])).toBe(true);
+            expect(await migrationReadiness(mcp)).toBe(true);
+            const optional=MIGRATIONS.find(m=>m.requirement==="billing")!;
+            await migrator.query("UPDATE public.schema_migrations SET checksum=$1 WHERE id=$2",["0".repeat(64),optional.id]);
+            try {expect(await migrationReadiness(runtime)).toBe(false);expect(await migrationReadiness(mcp)).toBe(false);}
+            finally {await migrator.query("UPDATE public.schema_migrations SET checksum=$1 WHERE id=$2",[optional.checksum,optional.id]);}
             await verifyBillingDatabase(runtime,mcp,migrator);
             await verifyBillingCustomerDatabase(runtime,mcp,migrator);
             await verifyConnectionManagementDatabase(runtime,mcp,migrator);

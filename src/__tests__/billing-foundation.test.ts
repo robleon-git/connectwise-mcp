@@ -23,6 +23,13 @@ function harness(){
  const service=new BillingService(config,store as unknown as BillingStore,provider);
  return {store,provider,service,receipts,setCurrent:(s:SubscriptionState)=>{current=s;},getApplied:()=>applied};
 }
+describe("feature-scoped readiness uses the existing billing gate",()=>{
+ it("defaults OFF and rejects production opt-in even with otherwise valid TEST settings",()=>{
+  expect(billingConfig({})).toBeUndefined();expect(billingConfig({...env,CW_BILLING_ENABLED:"false"})).toBeUndefined();
+  expect(()=>billingConfig({...env,NODE_ENV:"production"})).toThrow("invalid_configuration");
+  expect(()=>billingConfig({...env,CW_BILLING_ENABLED:"enabled"})).toThrow("invalid_configuration");
+ });
+});
 describe("test-only billing configuration",()=>{
  it.each([{}, {CW_BILLING_ENABLED:"false"}, {...env,CW_BILLING_ENABLED:"false",CW_STRIPE_SECRET_KEY:"sk_live_invalid"}])("default/off does not construct a provider",e=>expect(billingConfig(e)).toBeUndefined());
  it("accepts explicit test configuration",()=>expect(billingConfig(env)).toEqual(config));

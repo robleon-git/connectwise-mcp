@@ -20,9 +20,9 @@ Edit prepopulates only safe server/company fields. Both password fields start em
 
 ## Delivery boundary
 
-No live resource or permission change is part of this implementation. A future deployment must separately verify the control application's narrowly scoped ability to GET the existing exact-version customer credentials, in addition to its existing write/delete capabilities. Do not assume the deployed identity already has read permission and do not grant infrastructure-vault access. Without customer-vault read, Test and credential-reusing Edit fail closed; supplying replacement keys does not require reading old values.
+No live resource or permission change is part of this source correction. The separately approved preflight added the existing GET-only customer credential reader role to the control identity at the customer credential vault; its writer role was preserved. Reverify this assignment and effective access before future deployment. Do not grant infrastructure-vault access. Without customer-vault read, Test and credential-reusing Edit fail closed; supplying replacement keys does not require reading old values.
 
-There is no new migration, database grant, Stripe change, or MCP tool. Billing stays OFF. Release impact must be recomputed from the reviewed commit; this change preserves all 39 MCP executable modules and their protected inputs and uses the existing control-only delivery guards. Live validation/deployment needs separate approval.
+The connection-management slice itself adds no migration, database grant, Stripe change, or MCP tool. Billing stays OFF. However, delivery from deployed source `00663eb9e77651cf31a98c9cb0a868c639e79bf8` includes undeployed billing/package changes and the feature-scoped readiness correction. This is MCP-affecting and requires the full guarded MCP delivery path; it cannot use a control-only exception. See [Feature-scoped schema readiness](FEATURE_SCOPED_SCHEMA_READINESS.md). Deployment remains blocked: the existing MCP-affecting preparation path executes the complete migration manifest, while applying billing migrations is not authorized. This correction does not change that path or supply a migration-skip override. Live validation/deployment needs separate approval.
 
 ## Evidence
 

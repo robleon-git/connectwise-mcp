@@ -8,7 +8,7 @@ import { createPrincipalAuthenticator, getDescopeResourceConfig } from "./auth/d
 import { databasePool } from "./database/pool.js";
 import { AccountAccessStore, createCustomerConfigProvider } from "./auth/customer-access.js";
 import { managedCustomerCredentialReader } from "./auth/customer-vault.js";
-import { MIGRATIONS } from "./database/migrationManifest.js";
+import { migrationReadiness } from "./database/migrationManifest.js";
 import { createConnectWiseConfigLoader } from "./config-loader.js";
 
 async function main(): Promise<void> {
@@ -26,8 +26,7 @@ async function main(): Promise<void> {
       process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0") throw new Error("invalid_mcp_configuration");
   const pool = databasePool(process.env);
   try {
-    const result = await pool.query<{id:string;checksum:string}>("SELECT id,checksum FROM public.schema_migrations");
-    if (!MIGRATIONS.every(m=>result.rows.some(r=>r.id===m.id && r.checksum===m.checksum))) throw new Error();
+    if (!await migrationReadiness(pool)) throw new Error();
   } catch { await pool.end(); throw new Error("mcp_database_unavailable"); }
   let server: ReturnType<typeof createServer>;
   try {

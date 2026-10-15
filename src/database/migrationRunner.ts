@@ -1,21 +1,15 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { Pool, PoolClient } from "pg";
-export interface Migration {
-    id: string;
-    file: string;
-    checksum: string;
-}
+import { validateMigrationManifest, validateMigrationHistory, type Migration } from "./migrationManifest.js";
+export type { Migration } from "./migrationManifest.js";
 export type MigrationClient = Pick<PoolClient, "query" | "release">;
 export async function loadMigrations(manifest: readonly Migration[], directory: URL): Promise<(Migration & {
     sql: string;
 })[]> {
+    validateMigrationManifest(manifest);
     const result = [];
-    const ids = new Set<string>();
     for (const item of manifest) {
-        if (!/^[0-9]{4}_[a-z_]+$/.test(item.id) || item.file !== item.id + ".sql" || ids.has(item.id))
-            throw new Error("invalid_migration_manifest");
-        ids.add(item.id);
         const sql = await readFile(new URL(item.file, directory), "utf8");
         if (createHash("sha256").update(sql).digest("hex") !== item.checksum)
             throw new Error("migration_checksum_mismatch");
@@ -28,6 +22,11 @@ export async function migrate(pool: Pick<Pool, "connect">, migrations: readonly 
 })[]): Promise<{
     applied: number;
 }> {
+    // Execution always validates/applies the full supplied manifest, never a runtime feature projection.
+    try {
+        validateMigrationManifest(migrations);
+        if (migrations.some(item => typeof item.sql !== "string" || createHash("sha256").update(item.sql).digest("hex") !== item.checksum)) throw new Error();
+    } catch { throw new Error("migration_failed"); }
     const client: MigrationClient = await pool.connect();
     let locked = false;
     let transaction = false;
@@ -44,12 +43,9 @@ export async function migrate(pool: Pick<Pool, "connect">, migrations: readonly 
             id: string;
             checksum: string;
         }>("SELECT id, checksum FROM public.schema_migrations");
-        const known = new Map(migrations.map(m => [m.id, m]));
-        for (const row of existing.rows)
-            if (known.get(row.id)?.checksum !== row.checksum)
-                throw new Error("migration_history_mismatch");
+        const installed = validateMigrationHistory(existing.rows, migrations);
         for (const migration of migrations) {
-            if (existing.rows.some(row => row.id === migration.id))
+            if (installed.has(migration.id))
                 continue;
             await client.query(migration.sql);
             await client.query("INSERT INTO public.schema_migrations(id,checksum) VALUES($1,$2)", [migration.id, migration.checksum]);

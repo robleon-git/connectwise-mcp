@@ -21,17 +21,32 @@ export async function schemaCompatibility(previousSha,sha,run=execute) {
       for(const line of tree){const path=line.split("\t")[1];files[path]=(await run("git",["show",`${ref}:${path}`])).stdout;}
       const manifest=(await run("git",["show",`${ref}:src/database/migrationManifest.ts`])).stdout;
       const source=ts.createSourceFile("manifest.ts",manifest,ts.ScriptTarget.Latest,true);
-      if(source.statements.length!==1||!ts.isVariableStatement(source.statements[0]))throw new Error();
+      if(source.parseDiagnostics.length)throw new Error();
+      // Parse literal data only; never execute source. Keep full-source equality below, including helpers.
+      if(!ts.isVariableStatement(source.statements[0])||!(source.statements[0].declarationList.flags&ts.NodeFlags.Const)||
+        !source.statements[0].modifiers?.some(modifier=>modifier.kind===ts.SyntaxKind.ExportKeyword))throw new Error();
+      const helpers=new Set(["validateMigrationManifest","requiredMigrations","validateMigrationHistory","migrationHistoryReady","migrationReadiness"]);
+      const types=new Set(["MigrationRequirement","Migration","MigrationHistoryReader"]);
+      for(const statement of source.statements.slice(1)) {
+        const allowed=ts.isFunctionDeclaration(statement)?helpers.delete(statement.name?.text):
+          (ts.isInterfaceDeclaration(statement)||ts.isTypeAliasDeclaration(statement))&&types.delete(statement.name.text);
+        if(!allowed)throw new Error();
+      }
       const declarations=source.statements[0].declarationList.declarations;
       const declaration=declarations[0], init=declaration?.initializer;
-      if(declarations.length!==1||declaration.name.getText(source)!=="MIGRATIONS"||!init||!ts.isCallExpression(init)||init.expression.getText(source)!=="Object.freeze"||init.arguments.length!==1||!ts.isArrayLiteralExpression(init.arguments[0]))throw new Error();
-      const ids=new Set();
-      for(const element of init.arguments[0].elements){
-        if(!ts.isObjectLiteralExpression(element)||element.properties.length!==3)throw new Error();
+      if(declarations.length!==1||declaration.name.getText(source)!=="MIGRATIONS"||!init||!ts.isCallExpression(init)||init.expression.getText(source)!=="Object.freeze"||init.arguments.length!==1)throw new Error();
+      let array=init.arguments[0];
+      if(ts.isAsExpression(array)&&array.type.getText(source)==="const")array=array.expression;
+      if(!ts.isArrayLiteralExpression(array))throw new Error();
+      const ids=new Set();let format,previous="";
+      for(const element of array.elements){
+        if(!ts.isObjectLiteralExpression(element)||![3,4].includes(element.properties.length))throw new Error();
+        if(format!==undefined&&format!==element.properties.length)throw new Error();format=element.properties.length;
         const item={};
-        for(const property of element.properties){if(!ts.isPropertyAssignment(property)||!ts.isStringLiteral(property.initializer))throw new Error();const key=property.name.getText(source);if(!["id","file","checksum"].includes(key)||Object.hasOwn(item,key))throw new Error();item[key]=property.initializer.text;}
+        for(const property of element.properties){if(!ts.isPropertyAssignment(property)||!ts.isStringLiteral(property.initializer))throw new Error();const key=property.name.getText(source);if(!["id","file","checksum","requirement"].includes(key)||Object.hasOwn(item,key))throw new Error();item[key]=property.initializer.text;}
+        if(format===4&&!["core","billing"].includes(item.requirement)||format===3&&Object.hasOwn(item,"requirement"))throw new Error();
         const sql=files[`database/migrations/${item.file}`];
-        if(!/^[0-9]{4}_[a-z_]+$/.test(item.id||"")||item.file!==item.id+".sql"||ids.has(item.id)||typeof sql!=="string"||createHash("sha256").update(sql).digest("hex")!==item.checksum)throw new Error();ids.add(item.id);
+        if(item.id<=previous||!/^[0-9]{4}_[a-z_]+$/.test(item.id||"")||item.file!==item.id+".sql"||ids.has(item.id)||typeof sql!=="string"||createHash("sha256").update(sql).digest("hex")!==item.checksum)throw new Error();ids.add(item.id);previous=item.id;
       }
       if(ids.size!==tree.length||!ids.size)throw new Error();
       return {manifest,files,count:ids.size};
