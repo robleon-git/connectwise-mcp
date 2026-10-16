@@ -50,7 +50,7 @@ describe("computed control-only evidence",()=>{
   const source=await readFile('src/database/migrationManifest.ts','utf8');const files=source.matchAll(/file: "([a-z0-9_]+\.sql)"/g);const entries=[...files].map(x=>x[1]);
   const directory=entries.map(file=>`100644 blob ${"d".repeat(40)}\tdatabase/migrations/${file}`).join('\n');
   const run=async(_cmd:string,args:string[])=>({stdout:args[0]==='ls-tree'?directory:args[1].endsWith('migrationManifest.ts')?source:await readFile(args[1].split(':')[1],'utf8')});
-  await expect(schemaCompatibility(before,after,run)).resolves.toMatchObject({migrationCount:7});
+  await expect(schemaCompatibility(before,after,run)).resolves.toMatchObject({migrationCount:8});
  });
  it("fails closed on missing source or failed Git inspection",async()=>{
   await expect(schemaCompatibility(before,after,async()=>{throw new Error("missing");})).rejects.toThrow("control_only_schema_unproven");

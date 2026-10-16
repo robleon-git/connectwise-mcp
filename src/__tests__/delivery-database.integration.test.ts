@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { Pool } from "pg";
 import { migrate, loadMigrations } from "../database/migrationRunner.js";
 import { bootstrapDatabase, BOOTSTRAP_PENDING } from "../database/bootstrap.js";
+import { verifyAccountNameDatabase } from "./fixtures/account-name-database.js";
 import { verifyCustomerDatabase } from "./fixtures/customer-database.js";
 import { verifyConnectionManagementDatabase } from "./fixtures/connection-management-database.js";
 import { verifyConnectionDatabase } from "./fixtures/connection-database.js";
@@ -63,14 +64,12 @@ describe.skipIf(process.env.CW_DATABASE_INTEGRATION !== "true")("real disposable
             } finally {await locker.query("ROLLBACK");locker.release();}
             await verifyMcpDatabase(runtime,mcp,migrator);
             expect((await mcp.query("SELECT id FROM public.schema_migrations")).rows).toHaveLength(5);
-            // Core-only production-shaped schema supports both runtimes without installing disabled billing.
+            // Full-package core selection installs the name-only grant without billing schema.
+            const coreResult=await migrate(migrator,migrations,[]);
+            expect(coreResult).toMatchObject({applied:1,requirements:["core"],appliedIds:["0008_account_name_edit"],deferredIds:MIGRATIONS.filter(item=>item.requirement==="billing").map(item=>item.id)});
             expect(await migrationReadiness(runtime)).toBe(true);
             expect(await migrationReadiness(mcp)).toBe(true);
             expect(await migrationReadiness(runtime,["billing"])).toBe(false);
-            expect((await runtime.query("SELECT to_regclass('public.account_billing') IS NULL AS absent")).rows[0].absent).toBe(true);
-            // Full-package validation with core selection defers missing billing schema explicitly.
-            const coreResult=await migrate(migrator,migrations,[]);
-            expect(coreResult).toMatchObject({applied:0,requirements:["core"],deferredIds:MIGRATIONS.filter(m=>m.requirement==="billing").map(m=>m.id)});
             expect((await runtime.query("SELECT to_regclass('public.account_billing') IS NULL AS absent")).rows[0].absent).toBe(true);
             // Enabling billing uses the same runner and the complete package.
             expect((await migrate(migrator,migrations, ["billing"])).applied).toBe(2);
@@ -85,7 +84,8 @@ describe.skipIf(process.env.CW_DATABASE_INTEGRATION !== "true")("real disposable
             await verifyBillingDatabase(runtime,mcp,migrator);
             await verifyBillingCustomerDatabase(runtime,mcp,migrator);
             await verifyConnectionManagementDatabase(runtime,mcp,migrator);
-            expect((await mcp.query("SELECT id FROM public.schema_migrations")).rows).toHaveLength(7);
+            await verifyAccountNameDatabase(runtime,mcp,migrator);
+            expect((await mcp.query("SELECT id FROM public.schema_migrations")).rows).toHaveLength(8);
             await expect(runtime.query("DELETE FROM public.schema_migrations")).rejects.toThrow();
             await expect(runtime.query("CREATE TABLE public.forbidden(id int)")).rejects.toThrow();
             await expect(runtime.query("SET ROLE cw_migrator")).rejects.toThrow();

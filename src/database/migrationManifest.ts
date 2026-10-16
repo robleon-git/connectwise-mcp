@@ -5,7 +5,8 @@ export const MIGRATIONS = Object.freeze([
   { id: "0004_mcp_identity_linkage", file: "0004_mcp_identity_linkage.sql", checksum: "cc4336854dafdc575fd5631d0fa07e62937202dfce52a2f4b9fb0de7d44f9c07", requirement: "core" },
   { id: "0005_web_paid_entitlement", file: "0005_web_paid_entitlement.sql", checksum: "35f4a74eb6f061365cc7d4a8392648e00ea2cc0b7704c8b0dbcfafe7d2eadb5a", requirement: "core" },
   { id: "0006_test_billing_foundation", file: "0006_test_billing_foundation.sql", checksum: "27b128d14c18f48668489ec6ce463a1b64dc0c946632abcde76c7e3481900ecc", requirement: "billing" },
-  { id: "0007_test_billing_checkout", file: "0007_test_billing_checkout.sql", checksum: "cf319314cc19a8daf7782bf23c7166160d7f7aa50eb0a60c86f58d32a8006e83", requirement: "billing" }
+  { id: "0007_test_billing_checkout", file: "0007_test_billing_checkout.sql", checksum: "cf319314cc19a8daf7782bf23c7166160d7f7aa50eb0a60c86f58d32a8006e83", requirement: "billing" },
+  { id: "0008_account_name_edit", file: "0008_account_name_edit.sql", checksum: "db9c40c882343deb5eec9d26b06355665807e22ba7075ada0cf66efaf6977729", requirement: "core" }
 ] as const);
 
 export type MigrationRequirement = "core" | "billing";

@@ -16,7 +16,7 @@ describe("explicit migration CLI",()=>{
   const result=await cli(args);expect(result.exitCode).toBe(1);expect(mock.load).not.toHaveBeenCalled();expect(mock.pool).not.toHaveBeenCalled();expect(mock.migrate).not.toHaveBeenCalled();expect(result.error).toHaveBeenCalledWith(JSON.stringify({event:"migration.failed"}));
  });
  it.each(["core","core,billing"])("loads full manifest and propagates explicit %s",async selection=>{
-  const result=await cli([selection]);expect(mock.load.mock.calls[0][0]).toHaveLength(7);expect(mock.migrate.mock.calls[0][2]).toEqual(selection==="core"?[]:["billing"]);expect(result.end).toHaveBeenCalledOnce();expect(result.log).toHaveBeenCalledOnce();
+  const result=await cli([selection]);expect(mock.load.mock.calls[0][0]).toHaveLength(8);expect(mock.migrate.mock.calls[0][2]).toEqual(selection==="core"?[]:["billing"]);expect(result.end).toHaveBeenCalledOnce();expect(result.log).toHaveBeenCalledOnce();
  });
 });
 
