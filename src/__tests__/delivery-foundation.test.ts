@@ -110,7 +110,7 @@ describe("database config", () => {
     it("allows only explicit loopback test mode outside production", () => { const local = { NODE_ENV: "test", CW_DB_LOCAL_TEST: "true", CW_DB_HOST: "127.0.0.1", CW_DB_NAME: "cw_delivery_test", CW_DB_USER: "postgres", CW_DB_LOCAL_PASSWORD: "synthetic" }; expect(databaseConfig(local).local).toBe(true); expect(() => databaseConfig({ ...local, NODE_ENV: "production" })).toThrow(); });
 });
 describe("migration foundation", () => {
-    it("loads immutable SQL from the manifest", async () => { const loaded = await loadMigrations(MIGRATIONS, new URL("../../database/migrations/", import.meta.url)); expect(loaded).toHaveLength(8); expect(loaded[1].id).toBe("0002_customer_foundation"); expect(loaded[0].sql).not.toMatch(/CREATE TABLE.*(?:users|accounts|entitlements)/i); });
+    it("loads immutable SQL from the manifest", async () => { const loaded = await loadMigrations(MIGRATIONS, new URL("../../database/migrations/", import.meta.url)); expect(loaded).toHaveLength(7); expect(loaded[1].id).toBe("0002_customer_foundation"); expect(loaded[0].sql).not.toMatch(/CREATE TABLE.*(?:users|accounts|entitlements)/i); });
     it("rejects checksum changes before connection", async () => { await expect(loadMigrations([{ ...MIGRATIONS[0], checksum: "0".repeat(64) }], new URL("../../database/migrations/", import.meta.url))).rejects.toThrow("migration_checksum_mismatch"); });
     it("rolls back and releases lock/client without raw error leakage", async () => {
         const query = vi.fn(async (sql: string) => {

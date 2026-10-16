@@ -4,7 +4,7 @@ import type { ConnectionService } from "../../connections/service.js";
 import { randomBytes } from "node:crypto";
 import { EncryptJWT, jwtDecrypt } from "jose";
 import { API_ORIGIN, API_PREFIX, CALLBACK_URI, PORTAL_ORIGIN, CustomerAuthError } from "./identity.js";
-import { AccountNameError, FLOW_SECONDS, SESSION_SECONDS, type CustomerStore } from "./store.js";
+import { FLOW_SECONDS, SESSION_SECONDS, type CustomerStore } from "./store.js";
 import type { IdentityProvider, BrowserFlow } from "./microsoft.js";
 export const SESSION_COOKIE = "__Secure-cw-customer-session";
 export const FLOW_COOKIE = "__Secure-cw-browser-flow";
@@ -101,25 +101,6 @@ export function customerRoutes(store: CustomerStore, provider: IdentityProvider,
         }).finally(()=>{req.body=undefined;});
       });
     }catch {res.status(503).json({error:"unavailable"});}
-  });
-  router.post("/account/name", async (req, res) => {
-    try {
-      if (Object.keys(req.query).length || ["X-Account-Id", "X-User-Id", "X-Customer-Id"].some(h => req.get(h) !== undefined)) {
-        res.status(400).json({ error: "invalid_request" }); return;
-      }
-      const context = await store.session(readCookie(req.get("Cookie"), SESSION_COOKIE));
-      if (!context) { res.status(401).json({ error: "unauthorized" }); return; }
-      json({ limit: "1kb", inflate: false, strict: true })(req, res, error => {
-        if (error || !req.is("application/json") || !req.body || Array.isArray(req.body) ||
-            Object.keys(req.body).length !== 1 || !Object.hasOwn(req.body, "name")) {
-          req.body = undefined; res.status(400).json({ error: "invalid_name" }); return;
-        }
-        void store.rename(context, req.body.name).then(account => res.json({ account })).catch(error => {
-          if (error instanceof AccountNameError) res.status(error.code === "forbidden" ? 403 : 400).json({ error: error.code });
-          else res.status(503).json({ error: "unavailable" });
-        }).finally(() => { req.body = undefined; });
-      });
-    } catch { res.status(503).json({ error: "unavailable" }); }
   });
   for (const path of ["/session", "/account/status"]) router.get(path, async (req, res) => {
     try {

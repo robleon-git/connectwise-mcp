@@ -6,7 +6,7 @@ const core=MIGRATIONS.filter(m=>m.requirement==='core'),billing=MIGRATIONS.filte
 const history=(items:readonly {id:string;checksum:string}[]=MIGRATIONS)=>items.map(({id,checksum})=>({id,checksum}));
 describe('feature-scoped authoritative migration history',()=>{
  it('classifies core and billing once and selects by metadata rather than migration numbers',()=>{
-  expect(core).toHaveLength(6);expect(billing.map(m=>m.id)).toEqual(['0006_test_billing_foundation','0007_test_billing_checkout']);
+  expect(core).toHaveLength(5);expect(billing.map(m=>m.id)).toEqual(['0006_test_billing_foundation','0007_test_billing_checkout']);
   expect(requiredMigrations()).toEqual(core);expect(requiredMigrations(['billing'])).toEqual(MIGRATIONS);
   const renamed:Migration[]=[{...core[0],id:'9000_core',file:'9000_core.sql'},{...billing[0],id:'9001_feature',file:'9001_feature.sql'}];expect(requiredMigrations([],renamed)).toEqual([renamed[0]]);
  });
@@ -24,9 +24,9 @@ describe('feature-scoped authoritative migration history',()=>{
  it('database failures and malformed query results fail closed without raw errors',async()=>{expect(await migrationReadiness({query:async()=>{throw new Error('synthetic-secret');}})).toBe(false);expect(await migrationReadiness({query:async()=>({rows:null})})).toBe(false);});
  it('the shared query validates optional installed history for both callers',async()=>{const db={query:vi.fn(async()=>({rows:history(core)}))};expect(await migrationReadiness(db)).toBe(true);expect(await migrationReadiness(db,['billing'])).toBe(false);expect(db.query).toHaveBeenCalledWith('SELECT id, checksum FROM public.schema_migrations ORDER BY id');});
  it('normal execution loads all SQL and applies every migration in manifest order',async()=>{
-  const loaded=await loadMigrations(MIGRATIONS,new URL('../../database/migrations/',import.meta.url));expect(loaded).toHaveLength(8);
+  const loaded=await loadMigrations(MIGRATIONS,new URL('../../database/migrations/',import.meta.url));expect(loaded).toHaveLength(7);
   const applied:string[]=[],query=vi.fn(async(sql:string,args?:unknown[])=>{if(sql.startsWith('INSERT INTO public.schema_migrations'))applied.push(args![0] as string);return{rows:history(loaded.filter(item=>applied.includes(item.id)))};}),release=vi.fn();
-  expect(await migrate({connect:async()=>({query,release})} as never,loaded, ["billing"])).toMatchObject({applied:8});expect(applied).toEqual(MIGRATIONS.map(m=>m.id));expect(release).toHaveBeenCalledOnce();
+  expect(await migrate({connect:async()=>({query,release})} as never,loaded, ["billing"])).toMatchObject({applied:7});expect(applied).toEqual(MIGRATIONS.map(m=>m.id));expect(release).toHaveBeenCalledOnce();
  });
  it('execution rejects malformed metadata or changed SQL before connecting',async()=>{const loaded=await loadMigrations(MIGRATIONS,new URL('../../database/migrations/',import.meta.url));const connect=vi.fn();for(const bad of [[{...loaded[0],requirement:'unknown'}],[{...loaded[0],sql:'changed'}]])await expect(migrate({connect} as never,bad as never, ["billing"])).rejects.toThrow('migration_failed');expect(connect).not.toHaveBeenCalled();});
  it('execution rejects duplicate/unknown installed history without applying SQL',async()=>{const sql='SELECT 1;',manifest=[{id:'0001_example',file:'0001_example.sql',checksum:createHash('sha256').update(sql).digest('hex'),requirement:'core' as const,sql}];for(const rows of [[...history(manifest),...history(manifest)],[{id:'9999_unknown',checksum:'a'.repeat(64)}]]){const query=vi.fn(async()=>({rows}));await expect(migrate({connect:async()=>({query,release:()=>{}})} as never,manifest, ["billing"])).rejects.toThrow('migration_failed');expect(query.mock.calls.some(c=>(c as unknown as [string])[0]===sql)).toBe(false);}});
