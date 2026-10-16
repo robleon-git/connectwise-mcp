@@ -23,7 +23,7 @@ export function ConnectionForm({onConnected,initial,onCancel}:{onConnected:()=>v
   }
   return <form onSubmit={event=>{void submit(event);}} autoComplete="off"><h3>{editing?"Edit ConnectWise connection":"Connect ConnectWise"}</h3>
     <p>{editing?"Leave both API key fields blank to keep your current credentials, or enter both replacement keys. Your saved connection stays active until the replacement is verified and saved.":"Use your dedicated read-only ConnectWise Manage API member credentials. All four fields are required. Testing validates and saves your connection."}</p>
-    <p>When ConnectWise asks for a User Defined Name, enter <strong>Monotorr</strong>.</p>
+    <p>When ChatGPT asks for a User Defined Name, enter <strong>Monotorr</strong>.</p>
     {([['url','ConnectWise URL'],['companyId','Company ID'],['publicKey','Public API Key'],['privateKey','Private API Key']] as const).map(([key,label])=><label key={key}>{label}
       <input name={key} type={key==='publicKey'||key==='privateKey'?'password':key==='url'?'url':'text'} value={fields[key]} required={!editing||key==='url'||key==='companyId'||!!fields.publicKey||!!fields.privateKey} disabled={busy} autoComplete="off"
         maxLength={key==='url'?2048:key==='companyId'?100:512} onChange={event=>setFields({...fields,[key]:event.target.value})}/></label>)}
