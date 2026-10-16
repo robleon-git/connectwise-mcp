@@ -1,6 +1,6 @@
 import {afterEach,describe,it,expect,vi} from 'vitest';
 import {createHash} from 'node:crypto';
-import {MIGRATIONS,requiredMigrations,validateMigrationManifest,migrationHistoryReady,migrationReadiness,type Migration} from '../database/migrationManifest.js';
+import {MIGRATIONS,FORWARD_COMPATIBILITY,requiredMigrations,validateMigrationManifest,migrationHistoryReady,migrationReadiness,type Migration} from '../database/migrationManifest.js';
 import {loadMigrations,migrate} from '../database/migrationRunner.js';
 const core=MIGRATIONS.filter(m=>m.requirement==='core'),billing=MIGRATIONS.filter(m=>m.requirement==='billing');
 const history=(items:readonly {id:string;checksum:string}[]=MIGRATIONS)=>items.map(({id,checksum})=>({id,checksum}));
@@ -57,6 +57,10 @@ async function startup(kind:'control'|'mcp',rows:unknown,enabled=false,dbFailure
  finally {process.exitCode=priorExit;}
 }
 describe('actual control and MCP entrypoint schema gates',()=>{
+ it('both actual startup paths tolerate only the pinned future row without billing',async()=>{
+  for(const kind of ['control','mcp'] as const){const x=await startup(kind,[...history(core),FORWARD_COMPATIBILITY[0]]);expect(x.listen).toHaveBeenCalledOnce();if(kind==='control'){const check=(x.createApi.mock.calls[0] as unknown as [()=>Promise<boolean>])[0];expect(await check()).toBe(true);}}
+ });
+
  it('control billing OFF passes readiness with core-only history and exposes no billing runtime',async()=>{const x=await startup('control',history(core));expect(x.listen).toHaveBeenCalledOnce();const check=(x.createApi.mock.calls[0] as unknown as [()=>Promise<boolean>])[0];expect(await check()).toBe(true);for(const f of [x.service,x.store,x.provider,x.worker,x.routes])expect(f).not.toHaveBeenCalled();expect(x.createApi.mock.calls[0]).toHaveLength(3);expect((x.createApi.mock.calls[0] as unknown[])[2]).toBeUndefined();});
  it('control core failure keeps readiness false without treating health as schema proof',async()=>{const x=await startup('control',history(core.slice(1)));const check=(x.createApi.mock.calls[0] as unknown as [()=>Promise<boolean>])[0];expect(await check()).toBe(false);expect(x.worker).not.toHaveBeenCalled();});
  it.each(billing.map(m=>m.id))('billing ON missing %s fails before constructing routes/services/worker or binding',async id=>{const x=await startup('control',history().filter(m=>m.id!==id),true);for(const f of [x.service,x.store,x.provider,x.worker,x.routes,x.createApi,x.createServer,x.listen])expect(f).not.toHaveBeenCalled();expect(x.end).toHaveBeenCalledOnce();expect(x.exitCode).toBe(1);});

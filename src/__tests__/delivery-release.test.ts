@@ -1,9 +1,10 @@
 // @ts-expect-error Delivery script has no declarations.
 import { migrationPlan } from "../../scripts/deploy/migration-features.mjs";
 import { beforeEach, afterEach, describe, it, expect, vi } from "vitest";
-const mocks = vi.hoisted(() => ({ az: vi.fn(), execute: vi.fn(), readFile: vi.fn(), writeFile: vi.fn(), smoke: vi.fn(), impact: vi.fn(), condition: vi.fn(), preflight: vi.fn(), receipt: vi.fn() }));
+const mocks = vi.hoisted(() => ({ az: vi.fn(), execute: vi.fn(), readFile: vi.fn(), writeFile: vi.fn(), smoke: vi.fn(), impact: vi.fn(), condition: vi.fn(), preflight: vi.fn(), receipt: vi.fn(), compatibility: vi.fn(), verifyCompatibility: vi.fn() }));
 vi.mock("node:fs/promises", () => ({ readFile: mocks.readFile, writeFile: mocks.writeFile, mkdir: vi.fn() }));
 vi.mock("../../scripts/deploy/common.mjs", () => ({ configuration: async () => ({ controlApi: "connectwise-control-api", migrationJob: "connectwise-migrate", resourceGroup: "monotorr-connectwise-prod-rg", registry: "monotorrdevacr6689",customerLoginClientId:"4405ef16-dc89-4385-8a84-cda2a52274cf" }), assertSubscription: vi.fn(), featureOnlyDeployment: vi.fn(), immutableImage: (_c: unknown, i: string) => i, needsDogfood: (p: string[]) => p.some(x => x === "src/auth/descope-mcp.ts"), az: mocks.az, execute: mocks.execute }));
+vi.mock("../../scripts/deploy/migration-features.mjs", async original => ({...await original<object>(), prepareSchemaCompatibility:mocks.compatibility, verifySchemaCompatibility:mocks.verifyCompatibility}));
 vi.mock("../../scripts/deploy/mcp-impact.mjs", () => ({ assessMcpImpact: mocks.impact }));
 vi.mock("../../scripts/deploy/smoke.mjs", () => ({ smoke: mocks.smoke }));
 vi.mock("../../scripts/deploy/control-condition.mjs", async importOriginal => ({...await importOriginal<object>(),controlCondition:mocks.condition}));
@@ -19,6 +20,8 @@ beforeEach(async () => {
     schemaPlan=await migrationPlan("core");
     vi.clearAllMocks();
     vi.stubEnv("GITHUB_REPOSITORY","robleon-git/connectwise-mcp");vi.stubEnv("GITHUB_RUN_ID","123");vi.stubEnv("GITHUB_RUN_ATTEMPT","1");
+    mocks.compatibility.mockResolvedValue({version:"schema-compatibility-v1",compatible:true,serving:{control:{revision:"connectwise-control-api--previous",image}}});
+    mocks.verifyCompatibility.mockResolvedValue(undefined);
     mocks.preflight.mockResolvedValue(undefined);
     mocks.receipt.mockImplementation(async (_call,context,execution)=>({version:"migration-breadcrumb-v1",context,execution,events:[],result:{}}));
     mocks.condition.mockResolvedValue({kind:"control-only",previousSha:previous,sha,moduleCount:39,protectedInputsEqual:true,migrationCount:4,migrationFingerprint:"c".repeat(64)});
@@ -276,5 +279,32 @@ describe("durable migration delivery safety",()=>{
  it("job context mismatch blocks start",async()=>{
   const original=mocks.az.getMockImplementation()!;mocks.az.mockImplementation(async(args:string[])=>args.some(a=>a.includes("containers[].{image:"))?JSON.stringify([{image,command:["node"],args:["dist/database/cli.js","core"],context:["wrong"]}]):original(args));
   await expect(release("prepare")).rejects.toThrow("migration_job_context_mismatch");expect(mocks.az.mock.calls.some(([a])=>a.includes("start"))).toBe(false);
+ });
+});
+
+describe("artifact compatibility gates precede live mutations",()=>{
+ it("rejects unsupported serving/rollback schema before traffic, job, or control mutation",async()=>{
+  mocks.compatibility.mockRejectedValue(new Error("release_schema_incompatible"));
+  await expect(release("prepare-slice3")).rejects.toThrow("release_schema_incompatible");
+  expect(mocks.az.mock.calls.some(([args])=>args.includes("set")||args.includes("update")||args.includes("start"))).toBe(false);
+  expect(mocks.preflight).not.toHaveBeenCalled();
+ });
+ it.each(["promote","rollback"])("%s rejects missing, stale or mismatched proof before activation/traffic",async action=>{
+  mocks.verifyCompatibility.mockRejectedValue(new Error("schema_compatibility_unproven"));
+  await expect(release(action)).rejects.toThrow("schema_compatibility_unproven");
+  expect(mocks.az.mock.calls.some(([args])=>args.includes("activate")||args.includes("set")||args.includes("update"))).toBe(false);
+ });
+ it("retains the computed proof in preparation evidence",async()=>{
+  const proof={version:"schema-compatibility-v1",compatible:true,target:{sha},serving:{control:{revision:"connectwise-control-api--previous",image}}};mocks.compatibility.mockResolvedValue(proof);
+  const original=mocks.az.getMockImplementation()!;mocks.az.mockImplementation(async(args:string[])=>args.includes("show")&&args.includes("properties.configuration.ingress.traffic")?JSON.stringify([{revisionName:"connectwise-control-api--previous",weight:100}]):original(args));
+  await release("prepare-slice3");expect(JSON.parse(mocks.writeFile.mock.calls.at(-1)![1]).schemaCompatibility).toEqual(proof);
+ });
+});
+
+describe("preparation uses the reviewed MCP build and production baseline",()=>{
+ it("stops before any mutation if independently read proof differs from reviewed MCP evidence",async()=>{
+  mocks.compatibility.mockResolvedValue({target:{mcpImage:"different"},serving:{mcp:{image:"old",revision:"old"},control:{revision:"connectwise-control-api--previous",image}}});
+  await expect(release("prepare-slice3",{image:"reviewed",baseline:{image:"old",revision:"old"}})).rejects.toThrow("schema_compatibility_baseline_changed");
+  expect(mocks.az.mock.calls.some(([args])=>args.includes("set")||args.includes("update")||args.includes("start"))).toBe(false);
  });
 });

@@ -8,6 +8,26 @@ export const MIGRATIONS = Object.freeze([
   { id: "0007_test_billing_checkout", file: "0007_test_billing_checkout.sql", checksum: "cf319314cc19a8daf7782bf23c7166160d7f7aa50eb0a60c86f58d32a8006e83", requirement: "billing" }
 ] as const);
 
+/** Reviewed runtime tolerance only. These entries are never executable or required. */
+export const FORWARD_COMPATIBILITY = Object.freeze([
+  { id: "0008_account_name_edit", checksum: "db9c40c882343deb5eec9d26b06355665807e22ba7075ada0cf66efaf6977729" }
+] as const);
+export interface CompatibleMigration {
+  readonly id: string;
+  readonly checksum: string;
+}
+export function validateCompatibilityCatalog(catalog: readonly CompatibleMigration[], manifest: readonly Migration[]): void {
+  validateMigrationManifest(manifest);
+  if (!Array.isArray(catalog)) throw new Error("invalid_migration_catalog");
+  const highest = Math.max(...manifest.map(item => Number(item.id.slice(0, 4))));
+  let previous = highest;
+  for (const item of catalog) {
+    if (!item || typeof item !== "object" || Object.keys(item).sort().join(",") !== "checksum,id" ||
+      typeof item.id !== "string" || !/^[0-9]{4}_[a-z_]+$/.test(item.id) || Number(item.id.slice(0, 4)) <= previous ||
+      typeof item.checksum !== "string" || !/^[a-f0-9]{64}$/.test(item.checksum)) throw new Error("invalid_migration_catalog");
+    previous = Number(item.id.slice(0, 4));
+  }
+}
 export type MigrationRequirement = "core" | "billing";
 export interface Migration {
   readonly id: string;
@@ -49,16 +69,25 @@ export function validateMigrationHistory(history: unknown, manifest: readonly Mi
   }
   return installed;
 }
-export function migrationHistoryReady(history: unknown, features: readonly "billing"[] = [], manifest: readonly Migration[] = MIGRATIONS): boolean {
+export function validateRuntimeMigrationHistory(history: unknown, manifest: readonly Migration[] = MIGRATIONS,
+  catalog: readonly CompatibleMigration[] = FORWARD_COMPATIBILITY): Set<string> {
+  validateCompatibilityCatalog(catalog, manifest);
+  // Reuse strict row/duplicate/checksum validation over the explicitly approved union.
+  const compatible = catalog.map(item => ({ ...item, file: item.id + ".sql", requirement: "core" as const }));
+  return validateMigrationHistory(history, [...manifest, ...compatible]);
+}
+export function migrationHistoryReady(history: unknown, features: readonly "billing"[] = [], manifest: readonly Migration[] = MIGRATIONS,
+  catalog: readonly CompatibleMigration[] = FORWARD_COMPATIBILITY): boolean {
   try {
-    const required = requiredMigrations(features, manifest), installed = validateMigrationHistory(history, manifest);
+    const required = requiredMigrations(features, manifest), installed = validateRuntimeMigrationHistory(history, manifest, catalog);
     return required.every(item => installed.has(item.id));
   } catch { return false; }
 }
 /** Read-only schema verification, shared by control readiness and the MCP pre-listen startup gate. */
 export async function migrationReadiness(db: MigrationHistoryReader, features: readonly "billing"[] = []): Promise<boolean> {
   try {
-    requiredMigrations(features); // Reject invalid feature/manifest evidence before querying.
+    requiredMigrations(features); // Reject invalid feature/manifest/catalog evidence before querying.
+    validateCompatibilityCatalog(FORWARD_COMPATIBILITY, MIGRATIONS);
     const result = await db.query("SELECT id, checksum FROM public.schema_migrations ORDER BY id");
     return migrationHistoryReady(result.rows, features);
   } catch { return false; }

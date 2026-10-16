@@ -25,7 +25,7 @@ let az=vi.fn(async(_args:string[])=>""),execute=vi.fn(async(_name:string,_args:s
 let schemaPlan: Awaited<ReturnType<typeof migrationPlan>>;
 beforeEach(async()=>{
  schemaPlan=await migrationPlan("core");
- state={fingerprintVersion:FINGERPRINT_VERSION,sha,mcpImage:image,controlImage,baseline:{...before},controlPromoted:true,control:{revision:"connectwise-control-api--s3-link-"+sha.slice(0,12),schemaPlan},candidate:{name:MCP_CANDIDATE,operatorCidr:"8.8.8.8/32"},acceptance:{...Object.fromEntries(ACCEPTANCE_KEYS.map((k:string)=>[k,true])),revision:MCP_CANDIDATE+"--candidate",image}};
+ state={fingerprintVersion:FINGERPRINT_VERSION,sha,mcpImage:image,controlImage,baseline:{...before},controlPromoted:true,control:{revision:"connectwise-control-api--s3-link-"+sha.slice(0,12),schemaPlan,schemaCompatibility:compatibility()},candidate:{name:MCP_CANDIDATE,operatorCidr:"8.8.8.8/32"},acceptance:{...Object.fromEntries(ACCEPTANCE_KEYS.map((k:string)=>[k,true])),revision:MCP_CANDIDATE+"--candidate",image}};
  az=vi.fn(async(args:string[])=>{
   if(args.some(arg=>arg.includes("containers[].{env:")))return JSON.stringify([{env:[{name:"NODE_ENV",value:"production"},{name:"CW_BILLING_ENABLED",value:"false"}]}]);
   if(productionRead(args))return productionArm();
@@ -52,7 +52,8 @@ function revisionArm(name:string,patch:Record<string,unknown>={}) {
  return JSON.stringify({name,properties:{active:true,healthState:"Healthy",provisioningState:"Provisioned",runningState:"RunningAtMaxScale",
   template:{...template,containers:template.containers.map(c=>({...c,image:selectedImage}))},...patch}});
 }
-function dependencies(){return {configuration:async()=>c,assertSubscription:vi.fn(),az,execute,readFile:async()=>JSON.stringify(state),writeFile:write,mkdir:vi.fn(),smoke};}
+function compatibility(){return {target:{mcpImage:image},serving:{mcp:{image:oldImage,revision:before.revision}},rollback:{mcp:{image:oldImage,revision:before.revision}}};}
+function dependencies(){return {verifySchemaCompatibility:vi.fn(async()=>undefined),configuration:async()=>c,assertSubscription:vi.fn(),az,execute,readFile:async()=>JSON.stringify(state),writeFile:write,mkdir:vi.fn(),smoke};}
 function input(action:string,extra={}){return {reviewedSha:sha,approval:`${action}:${sha}`,...extra};}
 function mutations(){return az.mock.calls.map(c=>c[0] as string[]).filter(args=>args.includes("update")||args.includes("create")||args.includes("put")||args.includes("copy")||args.includes("delete")||args.includes("set"));}
 const moduleNames=Array.from({length:39},(_,i)=>`dist/module-${i}.js`);
@@ -61,7 +62,7 @@ const schema={migrationCount:4,migrationFingerprint:oldDigest};
 function controlState(){
  const revision="connectwise-control-api--s3-link-"+sha.slice(0,12),previousRevision="connectwise-control-api--prior";
  const condition={kind:"control-only",previousSha:oldSha,sha,moduleCount:39,moduleFingerprint:digest,protectedInputsEqual:true,...schema};
- Object.assign(state,{controlPromoted:false,control:{sha,image:controlImage,previousImage:controlImage,previousSha:oldSha,previousRevision,revision,condition,schemaPlan}});
+ Object.assign(state,{controlPromoted:false,control:{sha,image:controlImage,previousImage:controlImage,previousSha:oldSha,previousRevision,revision,condition,schemaPlan,schemaCompatibility:compatibility()}});
  let traffic=[{revisionName:previousRevision,weight:100}];
  const original=az.getMockImplementation()!;
  az.mockImplementation(async args=>{
@@ -508,7 +509,7 @@ describe("bounded exact MCP cutover and recovery readiness",()=>{
 describe("feature selection retained through promotion and cutover",()=>{
  it("records a prepared control schema plan without altering MCP acceptance",async()=>{
   controlState();const accepted=structuredClone(state.acceptance);
-  const control={sha,image:controlImage,previousSha:oldSha,schemaPlan};
+  const control={sha,image:controlImage,previousSha:oldSha,schemaPlan,schemaCompatibility:compatibility()};
   const deps={...controlDependencies(),controlRelease:vi.fn(),readFile:async(path:string)=>JSON.stringify(path.endsWith("control-release.json")?control:state)};
   await expect(mcpRelease("prepare-control",input("prepare-control",{linkingClientId:"approved-public-client"}),deps)).resolves.toMatchObject({controlPrepared:true});
   const saved=JSON.parse(write.mock.calls.at(-1)![1]);expect(saved.control.schemaPlan).toEqual(schemaPlan);expect(saved.acceptance).toEqual(accepted);
@@ -523,5 +524,24 @@ describe("feature selection retained through promotion and cutover",()=>{
    await expect(mcpRelease("cutover",input("cutover",{ownerBaselineConnected:true,baselineReadToolsVerified:true,emergencyPilotRollbackApproved:true}),dependencies())).rejects.toThrow("control_features_changed");
    expect(mutations()).toHaveLength(0);
   }
+ });
+});
+
+describe("mandatory serving/rollback compatibility evidence",()=>{
+ it.each(["promote-control","cutover"])("%s fails before mutation on incompatible or missing proof",async action=>{
+  controlState();state.controlPromoted=true;
+  const deps={...controlDependencies(),verifySchemaCompatibility:vi.fn(async()=>{throw new Error("schema_compatibility_unproven");})};
+  await expect(mcpRelease(action,input(action,{ownerBaselineConnected:true,baselineReadToolsVerified:true,emergencyPilotRollbackApproved:true}),deps)).rejects.toThrow("schema_compatibility_unproven");
+  expect(mutations()).toHaveLength(0);
+ });
+ it("preserves the proof with acceptance through control promotion",async()=>{
+  controlState();const proof=structuredClone((state.control as {schemaCompatibility:object}).schemaCompatibility);
+  await mcpRelease("promote-control",input("promote-control"),controlDependencies());
+  expect(JSON.parse(write.mock.calls.at(-1)![1]).control.schemaCompatibility).toEqual(proof);
+ });
+ it("refuses a rollback artifact outside the explicit eligible set",async()=>{
+  state.cutoverStarted=true;(state.control as {schemaCompatibility:ReturnType<typeof compatibility>}).schemaCompatibility.rollback.mcp.image=image;
+  const original=az.getMockImplementation()!;az.mockImplementation(async args=>productionRead(args)?productionArm({image,revision:`${MCP_TARGET}--s3-${sha.slice(0,12)}`}):original(args));
+  await expect(mcpRelease("rollback",input("rollback",{emergencyPilotRollbackApproved:true}),dependencies())).rejects.toThrow("rollback_schema_unproven");expect(mutations()).toHaveLength(0);
  });
 });

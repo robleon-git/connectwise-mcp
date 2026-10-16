@@ -2,7 +2,7 @@ import {describe,it,expect,vi} from "vitest";
 import {readFile} from "node:fs/promises";
 import {createHash} from "node:crypto";
 // @ts-expect-error Delivery script has no declarations.
-import {controlCondition,requireControlOnlyImpact,schemaCompatibility,requireControlTraffic} from "../../scripts/deploy/control-condition.mjs";
+import {controlCondition,requireControlOnlyImpact,schemaCompatibility,readMigrationContract,requireControlTraffic} from "../../scripts/deploy/control-condition.mjs";
 const before="a".repeat(40),after="b".repeat(40),fingerprint="c".repeat(64);
 const names=Array.from({length:39},(_,i)=>`dist/module-${i}.js`);
 const impact={impact:"unchanged",changedOutputs:[],reachableModuleCount:39,moduleNames:names,previousModuleNames:names,protectedInputsEqual:true,outputFingerprint:fingerprint,previousOutputFingerprint:fingerprint};
@@ -59,5 +59,20 @@ describe("computed control-only evidence",()=>{
  it("requires explicit unambiguous traffic readback",()=>{
   expect(()=>requireControlTraffic([{revisionName:"old",weight:0},{revisionName:"new",weight:100}],"new")).not.toThrow();
   for(const traffic of [undefined,[],[{latestRevision:true,weight:100}],[{revisionName:"new",weight:50},{revisionName:"old",weight:50}],[{revisionName:"old",weight:100}]])expect(()=>requireControlTraffic(traffic,"new")).toThrow("control_traffic_unconfirmed");
+ });
+});
+
+describe("literal runtime tolerance catalog inspection",()=>{
+ const forward={id:"0008_future",checksum:"a".repeat(64)};
+ const source=(catalog:string)=>manifest+'\nexport const FORWARD_COMPATIBILITY=Object.freeze('+catalog+' as const);';
+ it("reads the embedded catalog without adding executable SQL or requiring it",async()=>{
+  const run=git({[before+":src/database/migrationManifest.ts"]:source(JSON.stringify([forward])).replaceAll('"id":','id:').replaceAll('"checksum":','checksum:')});
+  const contract=await readMigrationContract(before,run);expect(contract.catalog).toEqual([forward]);expect(contract.execution).toHaveLength(1);
+ });
+ it.each(['load()', '[{id:"0000_unknown",checksum:"'+"a".repeat(64)+'"}]', '[{id:"0008_future",checksum:"bad"}]', '[{id:"0008_future",checksum:"'+"a".repeat(64)+'"},{id:"0008_other",checksum:"'+"a".repeat(64)+'"}]'])('rejects ambiguous/dynamic catalog %s',async catalog=>{
+  await expect(readMigrationContract(before,git({[before+":src/database/migrationManifest.ts"]:source(catalog)}))).rejects.toThrow('migration_contract_unproven');
+ });
+ it("a changed catalog cannot qualify as unchanged control-only schema",async()=>{
+  await expect(schemaCompatibility(before,after,git({[after+":src/database/migrationManifest.ts"]:source('[]')}))).rejects.toThrow('control_only_schema_unproven');
  });
 });

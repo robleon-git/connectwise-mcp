@@ -1,3 +1,4 @@
+import { verifyCompatibilityDatabase } from "./fixtures/migration-compatibility-database.js";
 import { describe, it, expect } from "vitest";
 import { Pool } from "pg";
 import { migrate, loadMigrations } from "../database/migrationRunner.js";
@@ -86,6 +87,7 @@ describe.skipIf(process.env.CW_DATABASE_INTEGRATION !== "true")("real disposable
             await verifyBillingCustomerDatabase(runtime,mcp,migrator);
             await verifyConnectionManagementDatabase(runtime,mcp,migrator);
             expect((await mcp.query("SELECT id FROM public.schema_migrations")).rows).toHaveLength(7);
+            await verifyCompatibilityDatabase(runtime,mcp,migrator);
             await expect(runtime.query("DELETE FROM public.schema_migrations")).rejects.toThrow();
             await expect(runtime.query("CREATE TABLE public.forbidden(id int)")).rejects.toThrow();
             await expect(runtime.query("SET ROLE cw_migrator")).rejects.toThrow();

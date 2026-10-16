@@ -6,7 +6,7 @@ Status: repository-only readiness and execution correction; deployment remains b
 
 `src/database/migrationManifest.ts` remains authoritative for every migration's ID, file, checksum and mandatory `requirement` (`core` or `billing`). Existing migrations through the multi-source entitlement reader are core. Billing foundation and Checkout migrations are feature-scoped. Classification is explicit metadata; runtime logic never derives it from a migration number or filename.
 
-The same module validates manifest order/uniqueness, metadata, required migration selection and installed history. All installed history must contain unique, known IDs with exact checksums. Missing required schema, corrupt optional installed schema, malformed/unknown requirement metadata, invalid/ambiguous history, and query failure fail closed. Installed-history row order does not affect verification. Core migrations are always required; disabled-feature migrations may be absent, but are not exempt from checksum validation if installed.
+The same module validates manifest order/uniqueness, metadata, required migration selection and installed history. Execution requires unique, manifest-known installed IDs with exact checksums. Runtime readiness additionally accepts only the exact later IDs/checksums in its embedded forward-compatibility catalog, described below. Missing required schema, corrupt optional installed schema, malformed/unknown requirement metadata, invalid/ambiguous history, and query failure fail closed. Installed-history row order does not affect verification. Core migrations are always required; disabled-feature migrations may be absent, but are not exempt from checksum validation if installed.
 
 ## Runtime gates
 
@@ -57,3 +57,56 @@ Tests cover core-only readiness, missing core/feature schema, core/optional chec
 The 39 MCP read tools, zero write tools and tool schemas remain separately verified from executable-module impact. Local validation output belongs in ignored `.delivery/schema-readiness/`; it is not release provenance or authority to deploy. Unrelated local documentation and historical continuity files remain excluded.
 
 Execution-specific local validation belongs in ignored `.delivery/migration-execution/`. Genuine live migration-job command/log transport and effective permissions must be verified during the normal authorized deployment preflight; repository tests mock Azure, and do not claim live delivery occurred. If logs are unavailable after execution, stop and inspect actual history/evidence; do not blindly retry the job.
+
+## Release A: pinned forward-history compatibility
+
+Execution authority remains the `MIGRATIONS` manifest (0001–0007). Runtime
+readiness has a separate literal `FORWARD_COMPATIBILITY` catalog in the same
+module. Release A pins only `0008_account_name_edit` to
+`db9c40c882343deb5eec9d26b06355665807e22ba7075ada0cf66efaf6977729`.
+It neither requires nor ships/executes that SQL. Billing OFF still requires only
+core 0001–0005. Catalog IDs must be unique, well formed, checksum pinned, ordered
+and strictly later than every execution-manifest version; gaps are allowed.
+
+Both MCP pre-listen verification and control readiness validate every installed
+row. Missing required rows, known or catalog checksum changes, malformed or
+duplicate history/catalog metadata, unlisted history and database failures fail
+closed. A larger migration number alone is never evidence of compatibility.
+The strict migration runner intentionally ignores the catalog and rejects any
+installed migration outside its own execution manifest. Never use an older
+migration runner as a rollback operation.
+
+Preparation reads immutable registry digest/source provenance and parses the
+serving MCP/control source contracts as literal data, without executing source.
+It validates the complete SQL package against those manifests. Before traffic,
+job or candidate mutation, every target-required migration must be supported by
+both serving artifacts and the explicitly eligible retained rollback pair,
+either in their execution manifests or exact catalogs. Existing executable SQL
+cannot disappear or change, including disabled-feature migrations.
+
+The `schemaCompatibility` proof binds the source SHA, target images, feature
+plan, full source/SQL/catalog fingerprints, serving revisions/images and explicit
+eligible rollback revisions/images. It lives in active release evidence, not
+30-day migration receipts. Promotion/cutover recompute it from exact registry
+objects, Git source and retained/live revisions; missing proof, feature drift,
+provenance drift and artifact changes fail before live mutation. Candidate
+acceptance remains a separate mandatory, exact-SHA/image/revision requirement.
+
+Only the serving pair captured at preparation is designated eligible rollback;
+other retained revisions remain historical. Both rollback artifacts must accept
+the identical set of history ID/checksum pairs. Before rollback, verify the exact
+retained control artifact's `/ready` against the current database. This prevents
+replaying an earlier release proof after a future schema change. Inactive MCP
+revisions are retained by image/template provenance and need not already be
+running; existing copy/readiness polling still applies after rollback. Delivery
+continues to use the existing serialized production workflow and owner gates.
+
+| Runtime | Core 0001–0005 | Core plus exact 0008 |
+| --- | --- | --- |
+| Original 217e1d | Ready | Reject |
+| Release A | Ready | Ready |
+| Account-name Release B | Reject | Ready |
+
+Release A changes runtime verification, so the cumulative release remains
+MCP-affecting. It needs a new exact-SHA build and fresh candidate acceptance.
+No SQL, authentication, entitlement or tool-schema changes are part of A.

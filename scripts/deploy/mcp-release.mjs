@@ -1,4 +1,4 @@
-import { verifyControlRequirements } from "./migration-features.mjs";
+import { verifyControlRequirements, verifySchemaCompatibility } from "./migration-features.mjs";
 // Explicit MCP-affecting delivery only. The control-only release/impact guard is unchanged.
 import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
@@ -90,6 +90,7 @@ export async function mcpRelease(action,inputs={},dependencies={}) {
   let stage="release";
   try {
   const call=dependencies.az||mcpAz,run=dependencies.execute||execute,read=dependencies.readFile||readFile,write=dependencies.writeFile||writeFile;
+  const verifySchema=dependencies.verifySchemaCompatibility||verifySchemaCompatibility;
   const verifyFeatures=dependencies.verifyControlRequirements||verifyControlRequirements;
   const c=await (dependencies.configuration||configuration)();
   const head=(await run("git",["rev-parse","HEAD"])).stdout.trim();
@@ -186,9 +187,10 @@ export async function mcpRelease(action,inputs={},dependencies={}) {
     state.controlPromoted=false;await save(state);
     // Compute the Slice 3 condition inside preparation before any live mutation.
     await write(".delivery/built-image.json",JSON.stringify({sha:head,image:state.controlImage})+"\n");
-    await (dependencies.controlRelease||controlRelease)("prepare-slice3");
+    await (dependencies.controlRelease||controlRelease)("prepare-slice3",{image:state.mcpImage,baseline:state.baseline});
     const control=JSON.parse(await read(".delivery/control-release.json","utf8"));
     if(control.sha!==head||control.image!==state.controlImage)throw new Error("control_artifact_mismatch");
+    if (!control.schemaCompatibility || control.schemaCompatibility.target.mcpImage !== state.mcpImage) throw new Error("schema_compatibility_unproven");
     const suffix=`s3-link-${head.slice(0,12)}`;
     await call(["containerapp","update","-n",c.controlApi,"-g",c.resourceGroup,"--image",state.controlImage,"--revision-suffix",suffix,"--set-env-vars","CW_MCP_LINKING_ENABLED=true",`CW_MCP_LINK_CLIENT_ID=${inputs.linkingClientId}`,`DESCOPE_MCP_ISSUER=${ISSUER}`,`DESCOPE_MCP_JWKS_URI=${JWKS}`,`MCP_RESOURCE_URI=${c.mcpResource}`,"MCP_REQUIRED_SCOPE=connectwise.read","-o","none"]);
     const preparedRevision=`${c.controlApi}--${suffix}`;
@@ -210,6 +212,7 @@ export async function mcpRelease(action,inputs={},dependencies={}) {
     const condition=await controlCondition(state.control.previousSha,head,dependencies);
     if(condition.kind==="control-only"&&canonicalJson(condition)!==canonicalJson(state.control.condition))throw new Error("control_only_evidence_mismatch");
     if(state.control.condition&&canonicalJson(condition)!==canonicalJson(state.control.condition))throw new Error("control_condition_changed");
+    await verifySchema(call,c,state.control,"promote",run,dependencies.smoke||smoke);
     const selected=JSON.parse(await call(["containerapp","revision","show","-n",c.controlApi,"-g",c.resourceGroup,"--revision",state.control.revision,"--query","{health:properties.healthState,image:properties.template.containers[0].image,active:properties.active,fqdn:properties.fqdn}","-o","json"]));
     if(selected.health!=="Healthy"||selected.image!==state.controlImage||selected.active!==true||!selected.fqdn)throw new Error("control_candidate_not_ready");
     await verifyFeatures(call,c,state.control.schemaPlan);
@@ -279,6 +282,8 @@ export async function mcpRelease(action,inputs={},dependencies={}) {
     if(!state.control?.revision)throw new Error("control_features_unproven");
     await verifyFeatures(call,c,state.control.schemaPlan,state.control.revision);
     await verifyFeatures(call,c,state.control.schemaPlan);
+    if (state.control?.schemaCompatibility?.target.mcpImage !== state.mcpImage || state.control?.schemaCompatibility?.serving.mcp.image !== state.baseline.image || state.control?.schemaCompatibility?.serving.mcp.revision !== state.baseline.revision) throw new Error("schema_compatibility_unproven");
+    await verifySchema(call,c,state.control,"cutover",run,dependencies.smoke||smoke);
     await publicSmoke();state.cutoverStarted=true;await save(state); // Retain rollback baseline BEFORE mutation.
     await call(["containerapp","update",...target,"--image",state.mcpImage,"--revision-suffix",`s3-${head.slice(0,12)}`,"--set-env-vars",...mcpEnvironment(c).map(e=>`${e.name}=${e.value}`),"--remove-env-vars","CW_CONFIG_SOURCE","CW_MANAGE_URL","CW_MANAGE_COMPANY_ID","CW_MANAGE_CLIENT_ID","CW_MANAGE_PUBLIC_KEY","CW_MANAGE_PRIVATE_KEY","MCP_APPROVED_USER_ID","MCP_APPROVED_USER_CLAIM","-o","none"]);
     stage="cutover_readiness";
@@ -292,6 +297,8 @@ export async function mcpRelease(action,inputs={},dependencies={}) {
     const arm=await readArm(),actual=fromArm(arm);
     if(arm.properties.latestRevisionName!==expected||actual.image!==state.mcpImage||actual.preservedFingerprint!==state.baseline.preservedFingerprint||
        ![state.baseline.revision,expected].includes(arm.properties.latestReadyRevisionName))throw releaseFailure("baseline_changed","unexpected_runtime_stop_for_operator_review");
+    if (state.control?.schemaCompatibility?.rollback.mcp.image !== state.baseline.image || state.control?.schemaCompatibility?.rollback.mcp.revision !== state.baseline.revision) throw new Error("rollback_schema_unproven");
+    await verifySchema(call,c,state.control,"rollback",run,dependencies.smoke||smoke);
     const source=await revision(state.baseline.revision);
     if(source.properties.template.containers.length!==1||source.properties.template.containers[0].image!==state.baseline.image)throw releaseFailure("baseline_changed","retained_revision_changed");
     const revisions=await readArm("/revisions");

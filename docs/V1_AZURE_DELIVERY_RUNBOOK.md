@@ -517,3 +517,41 @@ The schema-readiness/execution correction preserves the existing workflow action
 - Application rollback retains installed additive schema and runs no down migrations. Migration transaction failure prevents candidate preparation. Successful migration followed by failed preparation leaves schema installed; preserve the prior application/traffic and rollback artifacts.
 
 For the current billing-OFF release, billing migrations remain unapplied if absent; no billing enablement, Stripe operation or customer commercial-state change is included. See `docs/FEATURE_SCOPED_SCHEMA_READINESS.md` for the execution contract and test evidence boundaries.
+
+## Forward-compatible migration rollout (Release A, then B)
+
+Release A is a compatibility-only release based on production `217e1d39b88e4a80ac63a743a351b47ab91c0ebb`.
+Its execution package remains 0001–0007, billing remains OFF, and its selected
+plan is core (0001–0005). No account-name endpoint/editor or 0008 SQL is included.
+Build A from its own new reviewed SHA, renew isolated candidate acceptance, then
+use normal prepare-control, promote-control and MCP cutover/acceptance. The core
+migration execution applies nothing if current production history is intact;
+0006/0007 remain deferred. Preserve Blob-receipt execution proof independently
+from the longer-lived release/rollback compatibility evidence.
+
+Preparation must produce `schemaCompatibility` before its first live mutation.
+The proof explicitly records both current serving images and both eligible
+rollback images, their literal execution/catalog contracts, target images and
+schema plan. No historical revision is eligible merely because it still exists.
+Promotion/cutover require that proof and revalidate exact provenance and current
+serving/retained artifacts. There is no skip flag, schema override or new action.
+
+After A is fully accepted in production, retain its MCP/control images and
+revisions as the compatibility-safe rollback floor for 0008. Carry Release B
+onto A's corrected delivery/runtime implementation, move 0008 from tolerance
+catalog to B's execution manifest (never both), and create a new reviewed
+B SHA/build; do not reuse the old `0509a15842ca31c0bff23ad8bfb60aab881da955`
+acceptance or artifacts as though they contained A. B's preparation may apply
+0008 only after the serving A pair and eligible rollback A pair pass the exact
+ID/checksum compatibility guard. Prepare B before starting a B candidate that
+requires 0008. Continue normal candidate acceptance, promotion, cutover and
+portal publication gates; do not add a manual SQL stage.
+
+Rollback is forward-only. After 0008, leave its SQL effects and ledger row
+installed and restore A using retained artifacts without invoking A's strict
+migration runner. The old 217e1d artifacts remain historical evidence and must
+not be selected for rollback after 0008. An old release record alone cannot
+establish eligibility: rollback revalidates exact retained control readiness
+against today's database before either runtime mutation. If that check or any
+provenance/compatibility check fails, stop; do not remove history, reverse SQL,
+change checksums, broaden catalogs or automatically rerun a migration job.

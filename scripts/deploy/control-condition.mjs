@@ -11,50 +11,73 @@ export function requireControlOnlyImpact(impact) {
     !/^[a-f0-9]{64}$/.test(impact.outputFingerprint||"")||impact.outputFingerprint!==impact.previousOutputFingerprint)
     throw new Error("control_only_impact_unproven");
 }
-export async function schemaCompatibility(previousSha,sha,run=execute) {
+// Read immutable source as literal data; never evaluate a previous artifact's JavaScript.
+export async function readMigrationContract(ref, run = execute) {
   try {
-    if(!shaPattern.test(previousSha)||!shaPattern.test(sha))throw new Error();
-    const snapshot=async ref=>{
-      const tree=(await run("git",["ls-tree","-r",ref,"--","database/migrations"])).stdout.trim().split("\n");
-      if(!tree.length||tree.some(line=>!/^100(?:644|755) blob [a-f0-9]{40}\tdatabase\/migrations\/[0-9]{4}_[a-z_]+\.sql$/.test(line)))throw new Error();
-      const files={};
-      for(const line of tree){const path=line.split("\t")[1];files[path]=(await run("git",["show",`${ref}:${path}`])).stdout;}
-      const manifest=(await run("git",["show",`${ref}:src/database/migrationManifest.ts`])).stdout;
-      const source=ts.createSourceFile("manifest.ts",manifest,ts.ScriptTarget.Latest,true);
-      if(source.parseDiagnostics.length)throw new Error();
-      // Parse literal data only; never execute source. Keep full-source equality below, including helpers.
-      if(!ts.isVariableStatement(source.statements[0])||!(source.statements[0].declarationList.flags&ts.NodeFlags.Const)||
-        !source.statements[0].modifiers?.some(modifier=>modifier.kind===ts.SyntaxKind.ExportKeyword))throw new Error();
-      const helpers=new Set(["validateMigrationManifest","requiredMigrations","validateMigrationHistory","migrationHistoryReady","migrationReadiness"]);
-      const types=new Set(["MigrationRequirement","Migration","MigrationHistoryReader"]);
-      for(const statement of source.statements.slice(1)) {
-        const allowed=ts.isFunctionDeclaration(statement)?helpers.delete(statement.name?.text):
-          (ts.isInterfaceDeclaration(statement)||ts.isTypeAliasDeclaration(statement))&&types.delete(statement.name.text);
-        if(!allowed)throw new Error();
+    if (!shaPattern.test(ref || "")) throw new Error();
+    const lines = (await run("git", ["ls-tree", "-r", ref, "--", "database/migrations"])).stdout.trim().split("\n");
+    if (!lines.length || lines.some(line => !/^100(?:644|755) blob [a-f0-9]{40}\tdatabase\/migrations\/[0-9]{4}_[a-z_]+\.sql$/.test(line))) throw new Error();
+    const files = {};
+    for (const line of lines) { const path = line.split("\t")[1]; files[path] = (await run("git", ["show", `${ref}:${path}`])).stdout; }
+    const manifest = (await run("git", ["show", `${ref}:src/database/migrationManifest.ts`])).stdout;
+    const source = ts.createSourceFile("manifest.ts", manifest, ts.ScriptTarget.Latest, true);
+    if (source.parseDiagnostics.length) throw new Error();
+    const helpers = new Set(["validateMigrationManifest", "requiredMigrations", "validateMigrationHistory", "migrationHistoryReady", "migrationReadiness",
+      "validateCompatibilityCatalog", "validateRuntimeMigrationHistory"]);
+    const types = new Set(["MigrationRequirement", "Migration", "MigrationHistoryReader", "CompatibleMigration"]);
+    const data = {};
+    for (const [index, statement] of source.statements.entries()) {
+      if (ts.isVariableStatement(statement)) {
+        if (!(statement.declarationList.flags & ts.NodeFlags.Const) || !statement.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword) || statement.declarationList.declarations.length !== 1) throw new Error();
+        const declaration = statement.declarationList.declarations[0], name = declaration.name.getText(source), init = declaration.initializer;
+        if (!["MIGRATIONS", "FORWARD_COMPATIBILITY"].includes(name) || Object.hasOwn(data, name) || index === 0 && name !== "MIGRATIONS" ||
+          !init || !ts.isCallExpression(init) || init.expression.getText(source) !== "Object.freeze" || init.arguments.length !== 1) throw new Error();
+        let array = init.arguments[0];
+        if (ts.isAsExpression(array) && array.type.getText(source) === "const") array = array.expression;
+        if (!ts.isArrayLiteralExpression(array)) throw new Error();
+        data[name] = array.elements.map(element => {
+          if (!ts.isObjectLiteralExpression(element)) throw new Error();
+          const item = {};
+          for (const prop of element.properties) {
+            if (!ts.isPropertyAssignment(prop) || !ts.isStringLiteral(prop.initializer)) throw new Error();
+            const key = prop.name.getText(source);
+            if (!["id", "file", "checksum", "requirement"].includes(key) || Object.hasOwn(item, key)) throw new Error();
+            item[key] = prop.initializer.text;
+          }
+          return item;
+        });
+      } else {
+        const allowed = ts.isFunctionDeclaration(statement) ? helpers.delete(statement.name?.text) :
+          (ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement)) && types.delete(statement.name.text);
+        if (!allowed) throw new Error();
       }
-      const declarations=source.statements[0].declarationList.declarations;
-      const declaration=declarations[0], init=declaration?.initializer;
-      if(declarations.length!==1||declaration.name.getText(source)!=="MIGRATIONS"||!init||!ts.isCallExpression(init)||init.expression.getText(source)!=="Object.freeze"||init.arguments.length!==1)throw new Error();
-      let array=init.arguments[0];
-      if(ts.isAsExpression(array)&&array.type.getText(source)==="const")array=array.expression;
-      if(!ts.isArrayLiteralExpression(array))throw new Error();
-      const ids=new Set();let format,previous="";
-      for(const element of array.elements){
-        if(!ts.isObjectLiteralExpression(element)||![3,4].includes(element.properties.length))throw new Error();
-        if(format!==undefined&&format!==element.properties.length)throw new Error();format=element.properties.length;
-        const item={};
-        for(const property of element.properties){if(!ts.isPropertyAssignment(property)||!ts.isStringLiteral(property.initializer))throw new Error();const key=property.name.getText(source);if(!["id","file","checksum","requirement"].includes(key)||Object.hasOwn(item,key))throw new Error();item[key]=property.initializer.text;}
-        if(format===4&&!["core","billing"].includes(item.requirement)||format===3&&Object.hasOwn(item,"requirement"))throw new Error();
-        const sql=files[`database/migrations/${item.file}`];
-        if(item.id<=previous||!/^[0-9]{4}_[a-z_]+$/.test(item.id||"")||item.file!==item.id+".sql"||ids.has(item.id)||typeof sql!=="string"||createHash("sha256").update(sql).digest("hex")!==item.checksum)throw new Error();ids.add(item.id);previous=item.id;
-      }
-      if(ids.size!==tree.length||!ids.size)throw new Error();
-      return {manifest,files,count:ids.size};
-    };
-    const before=await snapshot(previousSha),after=await snapshot(sha);
-    if(JSON.stringify(before)!==JSON.stringify(after))throw new Error();
-    return {migrationCount:after.count,migrationFingerprint:createHash("sha256").update(JSON.stringify(after)).digest("hex")};
-  }catch{throw new Error("control_only_schema_unproven");}
+    }
+    const execution = data.MIGRATIONS, catalog = data.FORWARD_COMPATIBILITY ?? [];
+    if (!Array.isArray(execution) || !execution.length || execution.length !== lines.length) throw new Error();
+    let previous = "", format;
+    for (const item of execution) {
+      const keys = Object.keys(item).sort().join(","), sql = files[`database/migrations/${item.file}`];
+      if (!["checksum,file,id", "checksum,file,id,requirement"].includes(keys) || format && format !== keys ||
+        !/^[0-9]{4}_[a-z_]+$/.test(item.id || "") || item.id <= previous || item.file !== item.id + ".sql" ||
+        !/^[a-f0-9]{64}$/.test(item.checksum || "") || typeof sql !== "string" || createHash("sha256").update(sql).digest("hex") !== item.checksum ||
+        keys.includes("requirement") && !["core", "billing"].includes(item.requirement)) throw new Error();
+      previous = item.id; format = keys;
+    }
+    let highest = Math.max(...execution.map(item => Number(item.id.slice(0, 4))));
+    for (const item of catalog) {
+      if (Object.keys(item).sort().join(",") !== "checksum,id" || !/^[0-9]{4}_[a-z_]+$/.test(item.id || "") ||
+        Number(item.id.slice(0, 4)) <= highest || !/^[a-f0-9]{64}$/.test(item.checksum || "")) throw new Error();
+      highest = Number(item.id.slice(0, 4));
+    }
+    return { manifest, files, count: execution.length, execution, catalog };
+  } catch { throw new Error("migration_contract_unproven"); }
+}
+export async function schemaCompatibility(previousSha, sha, run = execute) {
+  try {
+    const before = await readMigrationContract(previousSha, run), after = await readMigrationContract(sha, run);
+    if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error();
+    return { migrationCount: after.count, migrationFingerprint: createHash("sha256").update(JSON.stringify(after)).digest("hex") };
+  } catch { throw new Error("control_only_schema_unproven"); }
 }
 export async function controlCondition(previousSha,sha,dependencies={}) {
   if(!shaPattern.test(previousSha||"")||!shaPattern.test(sha||""))throw new Error("control_source_unknown");

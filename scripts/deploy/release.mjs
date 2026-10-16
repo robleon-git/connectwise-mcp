@@ -1,5 +1,5 @@
 import { breadcrumbPreflight, releaseMigrationContext, contextEnv, pollReceipt, migrationAttestation, receiptConfiguration, storeEnv } from "./migration-breadcrumbs.mjs";
-import { migrationPlan, readControlRequirements, verifyControlRequirements, migrationJobArgs } from "./migration-features.mjs";
+import { migrationPlan, readControlRequirements, verifyControlRequirements, migrationJobArgs, prepareSchemaCompatibility, verifySchemaCompatibility } from "./migration-features.mjs";
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { configuration, az, execute, assertSubscription, immutableImage, featureOnlyDeployment } from "./common.mjs";
@@ -32,7 +32,7 @@ async function imageAndSource(c, mode) {
     immutableImage(c, artifact.image);
     return artifact;
 }
-export async function release(action) {
+export async function release(action, expectedMcp) {
     const c = await configuration();
     featureOnlyDeployment("control-api");
     await assertSubscription(c);
@@ -59,6 +59,12 @@ export async function release(action) {
             if(selected.image!==current.image||selected.health!=="Healthy")throw new Error("control_baseline_unconfirmed");
             await smoke(`https://${current.fqdn}`,"control-api");
         }
+        const schemaCompatibility = await prepareSchemaCompatibility(az, c, built, schemaPlan);
+        if (schemaCompatibility.serving.control.revision !== current.revision ||
+            schemaCompatibility.serving.control.image !== current.image) throw new Error("schema_compatibility_baseline_changed");
+        if (expectedMcp && (schemaCompatibility.target.mcpImage !== expectedMcp.image ||
+            schemaCompatibility.serving.mcp.image !== expectedMcp.baseline.image ||
+            schemaCompatibility.serving.mcp.revision !== expectedMcp.baseline.revision)) throw new Error("schema_compatibility_baseline_changed");
         const migrationContext = condition?.kind === "control-only" ? undefined : releaseMigrationContext(built, schemaPlan);
         const receiptStore = migrationContext ? await receiptConfiguration() : undefined;
         if (migrationContext) await breadcrumbPreflight(az, c, receiptStore);
@@ -66,7 +72,7 @@ export async function release(action) {
         if(condition)await readControlTraffic(az,target,current.revision);
         await mkdir(".delivery", { recursive: true });
         // Persist rollback evidence BEFORE changing the candidate or migration job.
-        const manifest = { ...built, previousRevision: current.revision, previousImage: current.image, previousSha, portalArtifactSha: built.sha, schemaPlan, ...(condition ? {condition} : {}) };
+        const manifest = { ...built, previousRevision: current.revision, previousImage: current.image, previousSha, portalArtifactSha: built.sha, schemaPlan, schemaCompatibility, ...(condition ? {condition} : {}) };
         await writeFile(manifestPath, JSON.stringify(manifest) + "\n");
         let execution, migrationProof;
         if(condition?.kind!=="control-only") {
@@ -156,6 +162,7 @@ export async function release(action) {
         await verifyControlRequirements(az, c, manifest.schemaPlan);
         await verifyControlRequirements(az, c, manifest.schemaPlan, revision);
     }
+    await verifySchemaCompatibility(az, c, manifest, action);
     if (!selected.active)
         await az(["containerapp", "revision", "activate", ...target, "--revision", revision, "-o", "none"]);
     await az(["containerapp", "ingress", "traffic", "set", ...target, "--revision-weight", `${revision}=100`, "-o", "none"]);

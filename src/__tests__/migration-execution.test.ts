@@ -86,3 +86,15 @@ describe("target configuration and sanitized migration evidence",()=>{
  });
 });
 afterEach(()=>{vi.restoreAllMocks();});
+
+// Compatibility approval is not execution authority: the runner never uses the runtime catalog.
+describe('strict execution with approved forward runtime history',()=>{
+ it('rejects installed 0008 and rolls back without executing or reconciling it',async()=>{
+  const {MIGRATIONS,FORWARD_COMPATIBILITY}=await import('../database/migrationManifest.js');
+  const loaded=await loadMigrations(MIGRATIONS,new URL('../../database/migrations/',import.meta.url));
+  const query=vi.fn(async()=>({rows:[...MIGRATIONS,...FORWARD_COMPATIBILITY].map(({id,checksum})=>({id,checksum}))}));
+  await expect(migrate({connect:async()=>({query,release:()=>{}})} as never,loaded,[])).rejects.toThrow('migration_failed');
+  expect(query.mock.calls.some(c=>(c as unknown as [string])[0]==='ROLLBACK')).toBe(true);
+  expect(query.mock.calls.some(c=>loaded.some(m=>m.sql===(c as unknown as [string])[0]))).toBe(false);
+ });
+});
