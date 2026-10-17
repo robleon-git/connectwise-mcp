@@ -545,3 +545,45 @@ describe("mandatory serving/rollback compatibility evidence",()=>{
   await expect(mcpRelease("rollback",input("rollback",{emergencyPilotRollbackApproved:true}),dependencies())).rejects.toThrow("rollback_schema_unproven");expect(mutations()).toHaveLength(0);
  });
 });
+
+
+describe("migration-only reviewed action",()=>{
+ function migrationState(){Object.assign(state,{schemaPlan,buildProvenance:{action:"build",run:"123",attempt:"1"}});}
+ function proof(){return {version:"schema-compatibility-v1",compatible:true,target:{sha,mcpImage:image,controlImage},serving:{mcp:{image:oldImage,revision:before.revision}},rollback:{eligible:true}};}
+ function migrationDependencies(){return {...dependencies(),prepareSchemaCompatibility:vi.fn(async()=>proof()),executeMigration:vi.fn(async(_call:unknown,_c:unknown,_built:unknown,plan:unknown,options:{checkpoint:(p:object)=>Promise<void>})=>{
+   await options.checkpoint({context:{sha}});return {version:"release-migration-v1",status:"proven",plan,execution:"migration-1",result:{appliedIds:["0008_account_name_edit"],deferredIds:schemaPlan.optionalIds}};
+ }),verifyMigration:vi.fn(async()=>undefined)};}
+ it("requires exact SHA and action approval",async()=>{
+  migrationState();for(const extra of [{reviewedSha:oldSha},{approval:`candidate:${sha}`}])await expect(mcpRelease("migrate",input("migrate",extra),migrationDependencies())).rejects.toThrow();expect(mutations()).toEqual([]);
+ });
+ it("requires build provenance and the same reviewed feature plan before execution",async()=>{
+  migrationState();Object.assign(state,{buildProvenance:undefined});const d=migrationDependencies();await expect(mcpRelease("migrate",input("migrate"),d)).rejects.toThrow("migration_build_provenance_missing");expect(d.executeMigration).not.toHaveBeenCalled();
+  migrationState();Object.assign(state,{schemaPlan:{...schemaPlan,selection:"core,billing"}});await expect(mcpRelease("migrate",input("migrate"),d)).rejects.toThrow("migration_feature_plan_drift");expect(d.executeMigration).not.toHaveBeenCalled();
+ });
+ it.each(["candidate","accept-candidate","cutover"])("requires migration proof before new-lane %s",async action=>{
+  migrationState();const d=migrationDependencies();await expect(mcpRelease(action,input(action),d)).rejects.toThrow("migration_evidence_required");expect(mutations()).toEqual([]);
+ });
+ it("retains UNPROVEN evidence if the serving pair changes during migration",async()=>{
+  migrationState();const d=migrationDependencies();d.prepareSchemaCompatibility.mockResolvedValueOnce(proof()).mockRejectedValueOnce(new Error("baseline_changed"));await expect(mcpRelease("migrate",input("migrate"),d)).rejects.toThrow("baseline_changed");expect(JSON.parse(write.mock.calls.at(-1)![1]).migration.status).toBe("unproven");
+ });
+ it("checks serving/rollback compatibility before any migration mutation",async()=>{
+  migrationState();const d=migrationDependencies();d.prepareSchemaCompatibility.mockRejectedValueOnce(new Error("incompatible"));await expect(mcpRelease("migrate",input("migrate"),d)).rejects.toThrow("incompatible");expect(d.executeMigration).not.toHaveBeenCalled();expect(write).not.toHaveBeenCalled();expect(mutations()).toEqual([]);
+ });
+ it("records applied/deferred IDs and preserves acceptance/rollback without app or traffic mutation",async()=>{
+  migrationState();const d=migrationDependencies();await expect(mcpRelease("migrate",input("migrate"),d)).resolves.toMatchObject({migrationProven:true,appliedIds:["0008_account_name_edit"],deferredIds:schemaPlan.optionalIds});
+  const records=write.mock.calls.map(c=>JSON.parse(c[1]));expect(records[0].migration.status).toBe("unproven");expect(records.at(-1).migration).toMatchObject({status:"proven",execution:"migration-1",schemaCompatibility:proof()});expect(records.at(-1).acceptance).toEqual(state.acceptance);expect(records.at(-1).baseline).toEqual(state.baseline);expect(mutations()).toEqual([]);
+ });
+ it("leaves failures UNPROVEN and refuses a repeat instead of restarting",async()=>{
+  migrationState();const d=migrationDependencies();d.executeMigration.mockImplementationOnce(async(_call,_c,_built,_plan,options)=>{await options.checkpoint({execution:"migration-1"});throw new Error("migration_receipt_timeout");});await expect(mcpRelease("migrate",input("migrate"),d)).rejects.toThrow("migration_receipt_timeout");
+  Object.assign(state,JSON.parse(write.mock.calls.at(-1)![1]));expect((state as unknown as {migration:{status:string}}).migration.status).toBe("unproven");d.verifyMigration.mockRejectedValueOnce(new Error("migration_evidence_unproven"));await expect(mcpRelease("migrate",input("migrate"),d)).rejects.toThrow("migration_evidence_unproven");expect(d.executeMigration).toHaveBeenCalledOnce();
+ });
+ it.each(["candidate","accept-candidate","prepare-control","promote-control","cutover"])("rejects invalid recorded migration before %s mutation",async action=>{
+  migrationState();Object.assign(state,{migration:{status:"unproven"}});const d=migrationDependencies();d.verifyMigration.mockRejectedValueOnce(new Error("migration_evidence_unproven"));await expect(mcpRelease(action,input(action),d)).rejects.toThrow("migration_evidence_unproven");expect(mutations()).toEqual([]);
+ });
+ it("passes migration proof to preparation without invalidating it",async()=>{
+  migrationState();const migration={status:"proven",execution:"migration-1"};Object.assign(state,{migration});const d=migrationDependencies();const control=vi.fn(async(_action:string,options:{migration:object})=>{expect(options.migration).toEqual(migration);throw new Error("stop_before_control_update");});await expect(mcpRelease("prepare-control",input("prepare-control",{linkingClientId:"fixed-client"}),{...d,controlRelease:control})).rejects.toThrow("stop_before_control_update");expect(d.verifyMigration).toHaveBeenCalledOnce();expect(JSON.parse(write.mock.calls.find(([path])=>path===".delivery/mcp-release.json")![1]).migration).toEqual(migration);
+ });
+ it("workflow retains existing OIDC reader and exact evidence download for migrate",async()=>{
+  const workflow=await readFile(new URL("../../.github/workflows/deploy-mcp.yml",import.meta.url),"utf8");expect(workflow).toContain("options: [build, migrate,");expect(workflow).toContain("id-token: write");expect(workflow).toContain("if: inputs.action != 'build'");expect(workflow).toContain("node scripts/deploy/mcp-evidence-download.mjs");expect(workflow).not.toContain("listKeys");
+ });
+});

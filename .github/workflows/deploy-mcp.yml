@@ -4,7 +4,7 @@ on:
     inputs:
       action:
         type: choice
-        options: [build, prepare-control, promote-control, candidate, accept-candidate, cutover, rollback, cleanup]
+        options: [build, migrate, prepare-control, promote-control, candidate, accept-candidate, cutover, rollback, cleanup]
         required: true
       reviewed_sha:
         description: Exact reviewed committed source SHA

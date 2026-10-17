@@ -1,7 +1,7 @@
 // @ts-expect-error Delivery script has no declarations.
 import { migrationPlan } from "../../scripts/deploy/migration-features.mjs";
 import { beforeEach, afterEach, describe, it, expect, vi } from "vitest";
-const mocks = vi.hoisted(() => ({ az: vi.fn(), execute: vi.fn(), readFile: vi.fn(), writeFile: vi.fn(), smoke: vi.fn(), impact: vi.fn(), condition: vi.fn(), preflight: vi.fn(), receipt: vi.fn(), compatibility: vi.fn(), verifyCompatibility: vi.fn() }));
+const mocks = vi.hoisted(() => ({ az: vi.fn(), execute: vi.fn(), readFile: vi.fn(), writeFile: vi.fn(), smoke: vi.fn(), impact: vi.fn(), condition: vi.fn(), preflight: vi.fn(), receipt: vi.fn(), compatibility: vi.fn(), verifyCompatibility: vi.fn(), verifyMigration: vi.fn() }));
 vi.mock("node:fs/promises", () => ({ readFile: mocks.readFile, writeFile: mocks.writeFile, mkdir: vi.fn() }));
 vi.mock("../../scripts/deploy/common.mjs", () => ({ configuration: async () => ({ controlApi: "connectwise-control-api", migrationJob: "connectwise-migrate", resourceGroup: "monotorr-connectwise-prod-rg", registry: "monotorrdevacr6689",customerLoginClientId:"4405ef16-dc89-4385-8a84-cda2a52274cf" }), assertSubscription: vi.fn(), featureOnlyDeployment: vi.fn(), immutableImage: (_c: unknown, i: string) => i, needsDogfood: (p: string[]) => p.some(x => x === "src/auth/descope-mcp.ts"), az: mocks.az, execute: mocks.execute }));
 vi.mock("../../scripts/deploy/migration-features.mjs", async original => ({...await original<object>(), prepareSchemaCompatibility:mocks.compatibility, verifySchemaCompatibility:mocks.verifyCompatibility}));
@@ -10,6 +10,7 @@ vi.mock("../../scripts/deploy/smoke.mjs", () => ({ smoke: mocks.smoke }));
 vi.mock("../../scripts/deploy/control-condition.mjs", async importOriginal => ({...await importOriginal<object>(),controlCondition:mocks.condition}));
 vi.mock("../../scripts/deploy/migration-breadcrumbs.mjs",async original=>({...await original<object>(),
  breadcrumbPreflight:mocks.preflight, pollReceipt:mocks.receipt}));
+vi.mock("../../scripts/deploy/migration-execution.mjs", async original => ({...await original<object>(), verifyMigration:mocks.verifyMigration}));
 // @ts-expect-error Operator script has no declarations.
 import { release } from "../../scripts/deploy/release.mjs";
 const sha = "a".repeat(40), previous = "b".repeat(40), image = "monotorrdevacr6689.azurecr.io/connectwise-control-api@sha256:" + "a".repeat(64);
@@ -20,8 +21,9 @@ beforeEach(async () => {
     schemaPlan=await migrationPlan("core");
     vi.clearAllMocks();
     vi.stubEnv("GITHUB_REPOSITORY","robleon-git/connectwise-mcp");vi.stubEnv("GITHUB_RUN_ID","123");vi.stubEnv("GITHUB_RUN_ATTEMPT","1");
-    mocks.compatibility.mockResolvedValue({version:"schema-compatibility-v1",compatible:true,serving:{control:{revision:"connectwise-control-api--previous",image}}});
+    mocks.compatibility.mockResolvedValue({version:"schema-compatibility-v1",compatible:true,target:{mcpImage:image},serving:{mcp:{image,revision:"mcp-prior"},control:{revision:"connectwise-control-api--previous",image}}});
     mocks.verifyCompatibility.mockResolvedValue(undefined);
+    mocks.verifyMigration.mockResolvedValue(undefined);
     mocks.preflight.mockResolvedValue(undefined);
     mocks.receipt.mockImplementation(async (_call,context,execution)=>({version:"migration-breadcrumb-v1",context,execution,events:[],result:{}}));
     mocks.condition.mockResolvedValue({kind:"control-only",previousSha:previous,sha,moduleCount:39,protectedInputsEqual:true,migrationCount:4,migrationFingerprint:"c".repeat(64)});
@@ -306,5 +308,24 @@ describe("preparation uses the reviewed MCP build and production baseline",()=>{
   mocks.compatibility.mockResolvedValue({target:{mcpImage:"different"},serving:{mcp:{image:"old",revision:"old"},control:{revision:"connectwise-control-api--previous",image}}});
   await expect(release("prepare-slice3",{image:"reviewed",baseline:{image:"old",revision:"old"}})).rejects.toThrow("schema_compatibility_baseline_changed");
   expect(mocks.az.mock.calls.some(([args])=>args.includes("set")||args.includes("update")||args.includes("start"))).toBe(false);
+ });
+});
+
+
+describe("migration-only proof reuse during preparation",()=>{
+ const expected={image,baseline:{image,revision:"mcp-prior"}};
+ it("reuses the proven execution without job update/start or a second receipt execution",async()=>{
+  mocks.condition.mockResolvedValue({kind:"mcp-affecting",previousSha:previous,sha});
+  const migration={version:"release-migration-v1",status:"proven",execution:"previous-migration",attestation:{schemaVerified:true},schemaCompatibility:await mocks.compatibility()};
+  const original=mocks.az.getMockImplementation()!;mocks.az.mockImplementation(async(args:string[])=>args.includes("properties.configuration.ingress.traffic")?JSON.stringify([{revisionName:"connectwise-control-api--previous",weight:100}]):original(args));
+  await expect(release("prepare-slice3",{...expected,migration,migrationRequired:true})).resolves.toMatchObject({prepared:true});
+  expect(mocks.verifyMigration).toHaveBeenCalledOnce();expect(mocks.az.mock.calls.some(([args])=>args.includes("job"))).toBe(false);expect(mocks.receipt).not.toHaveBeenCalled();
+  const manifest=JSON.parse(mocks.writeFile.mock.calls.at(-1)![1]);expect(manifest.migration).toEqual(migration);expect(manifest.execution).toBe("previous-migration");
+ });
+ it("rejects an older build-only artifact that omits required migration proof",async()=>{
+  mocks.condition.mockResolvedValue({kind:"mcp-affecting",previousSha:previous,sha});await expect(release("prepare-slice3",{...expected,migrationRequired:true})).rejects.toThrow("migration_evidence_required");expect(mocks.az.mock.calls.some(([args])=>args.includes("update")||args.includes("set")||args.includes("start"))).toBe(false);
+ });
+ it.each(["migration_evidence_unproven","migration_receipt_expired"])("rejects %s before control or traffic mutation",async message=>{
+  mocks.verifyMigration.mockRejectedValueOnce(new Error(message));await expect(release("prepare-slice3",{...expected,migration:{status:"proven"}})).rejects.toThrow(message);expect(mocks.az.mock.calls.some(([args])=>args.includes("update")||args.includes("set")||args.includes("start"))).toBe(false);
  });
 });

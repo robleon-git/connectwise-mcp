@@ -1,5 +1,5 @@
-import { breadcrumbPreflight, releaseMigrationContext, contextEnv, pollReceipt, migrationAttestation, receiptConfiguration, storeEnv } from "./migration-breadcrumbs.mjs";
-import { migrationPlan, readControlRequirements, verifyControlRequirements, migrationJobArgs, prepareSchemaCompatibility, verifySchemaCompatibility } from "./migration-features.mjs";
+import { executeMigration, verifyMigration } from "./migration-execution.mjs";
+import { migrationPlan, readControlRequirements, verifyControlRequirements, prepareSchemaCompatibility, verifySchemaCompatibility } from "./migration-features.mjs";
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { configuration, az, execute, assertSubscription, immutableImage, featureOnlyDeployment } from "./common.mjs";
@@ -65,50 +65,27 @@ export async function release(action, expectedMcp) {
         if (expectedMcp && (schemaCompatibility.target.mcpImage !== expectedMcp.image ||
             schemaCompatibility.serving.mcp.image !== expectedMcp.baseline.image ||
             schemaCompatibility.serving.mcp.revision !== expectedMcp.baseline.revision)) throw new Error("schema_compatibility_baseline_changed");
-        const migrationContext = condition?.kind === "control-only" ? undefined : releaseMigrationContext(built, schemaPlan);
-        const receiptStore = migrationContext ? await receiptConfiguration() : undefined;
-        if (migrationContext) await breadcrumbPreflight(az, c, receiptStore);
-        await az(["containerapp", "ingress", "traffic", "set", ...target, "--revision-weight", `${current.revision}=100`, "-o", "none"]);
-        if(condition)await readControlTraffic(az,target,current.revision);
+        const priorMigration = expectedMcp?.migration;
+        if (expectedMcp?.migrationRequired && condition?.kind !== "control-only" && !priorMigration) throw new Error("migration_evidence_required");
+        if (priorMigration) {
+            await verifyMigration(az, c, built, schemaPlan, priorMigration);
+            if (JSON.stringify(priorMigration.schemaCompatibility) !== JSON.stringify(schemaCompatibility)) throw new Error("schema_compatibility_unproven");
+        }
         await mkdir(".delivery", { recursive: true });
         // Persist rollback evidence BEFORE changing the candidate or migration job.
         const manifest = { ...built, previousRevision: current.revision, previousImage: current.image, previousSha, portalArtifactSha: built.sha, schemaPlan, schemaCompatibility, ...(condition ? {condition} : {}) };
         await writeFile(manifestPath, JSON.stringify(manifest) + "\n");
         let execution, migrationProof;
-        if(condition?.kind!=="control-only") {
-            await az(["containerapp", "job", "update", "-n", c.migrationJob, "-g", c.resourceGroup, "--image", built.image, "--command", "node", "--args", ...migrationJobArgs(schemaPlan), "--set-env-vars", contextEnv(migrationContext), storeEnv(receiptStore), "-o", "none"]);
-            const job = JSON.parse(await az(["containerapp", "job", "show", "-n", c.migrationJob, "-g", c.resourceGroup, "--query", "properties.template.containers[].{image:image,command:command,args:args,context:env[?name=='CW_MIGRATION_CONTEXT'].value,store:env[?name=='CW_MIGRATION_RECEIPT_STORE'].value}", "-o", "json"]));
-            if (!Array.isArray(job) || job.length !== 1 || job[0].image !== built.image || JSON.stringify(job[0].command) !== JSON.stringify(["node"]) || JSON.stringify(job[0].args) !== JSON.stringify(migrationJobArgs(schemaPlan))) throw new Error("migration_job_mismatch");
-            if (JSON.stringify(job[0].context) !== JSON.stringify([contextEnv(migrationContext).split("=")[1]])) throw new Error("migration_job_context_mismatch");
-            if (JSON.stringify(job[0].store) !== JSON.stringify([storeEnv(receiptStore).split("=")[1]])) throw new Error("migration_job_store_mismatch");
-            execution = await az(["containerapp", "job", "start", "-n", c.migrationJob, "-g", c.resourceGroup, "--query", "name", "-o", "tsv"]);
-            if (!/^[a-z0-9-]+$/.test(execution))
-                throw new Error("invalid_execution");
-            let migrated = false;
-            for (let i = 0; i < 40; i++) {
-                const status = await az(["containerapp", "job", "execution", "show", "-n", c.migrationJob, "-g", c.resourceGroup, "--job-execution-name", execution, "--query", "properties.status", "-o", "tsv"]);
-                if (status === "Succeeded") {
-                    migrated = true;
-                    break;
-                }
-                if (status === "Failed")
-                    break;
-                await new Promise(r => setTimeout(r, 3000));
-            }
-            const executionContainers = JSON.parse(await az(["containerapp", "job", "execution", "show", "-n", c.migrationJob, "-g", c.resourceGroup, "--job-execution-name", execution, "--query", "properties.template.containers[].{image:image,command:command,args:args,context:env[?name=='CW_MIGRATION_CONTEXT'].value,store:env[?name=='CW_MIGRATION_RECEIPT_STORE'].value}", "-o", "json"]));
-            if (JSON.stringify(executionContainers) !== JSON.stringify(job)) throw new Error("migration_execution_mismatch");
-            // Detailed receipts have a separate 30-day lifetime; active provenance retains an attestation only.
-            let evidence, observed = [];
-            try {
-                evidence = await pollReceipt(az, migrationContext, execution, schemaPlan, {store:receiptStore, observe: events => { observed = events; }});
-                if (!migrated) throw new Error("migration_not_succeeded");
-                migrationProof = migrationAttestation(evidence);
-            } finally {
-                await writeFile(".delivery/migration-breadcrumb.json", JSON.stringify({version:"migration-breadcrumb-v1", context:migrationContext, execution, azureExecutionSucceeded:migrated, ...(evidence ? {evidence} : {completion:"unproven", events:observed})}) + "\n");
-            }
-
+        let migration = priorMigration;
+        if (priorMigration) {
+            execution = priorMigration.execution; migrationProof = priorMigration.attestation;
+        } else if(condition?.kind!=="control-only") {
+            migration = await executeMigration(az, c, built, schemaPlan);
+            execution = migration.execution; migrationProof = migration.attestation;
         }
         await verifyControlRequirements(az, c, schemaPlan);
+        await az(["containerapp", "ingress", "traffic", "set", ...target, "--revision-weight", `${current.revision}=100`, "-o", "none"]);
+        if(condition)await readControlTraffic(az,target,current.revision);
         const suffix = `p0-${built.sha.slice(0, 12)}`;
         await az(["containerapp", "update", ...target, "--image", built.image, "--revision-suffix", suffix, ...(c.customerLoginClientId ? ["--set-env-vars", "CW_CONNECTION_SETUP_ENABLED=true", "CW_CUSTOMER_FEATURES_ENABLED=true", `CW_PORTAL_LOGIN_CLIENT_ID=${c.customerLoginClientId}`] : []), "-o", "none"]);
         const revision = `${c.controlApi}--${suffix}`;
@@ -128,7 +105,7 @@ export async function release(action, expectedMcp) {
         const domain = current.fqdn.split(".").slice(1).join(".");
         await smoke(`https://${c.controlApi}---candidate.${domain}`, "control-api");
         await smoke("https://api.monotorr.com", "mcp");
-        await writeFile(manifestPath, JSON.stringify({ ...manifest, revision, candidateSmokePassed: true, execution, migrationProof }) + "\n");
+        await writeFile(manifestPath, JSON.stringify({ ...manifest, revision, candidateSmokePassed: true, execution, migrationProof, ...(migration ? {migration} : {}) }) + "\n");
         return { prepared: true, revision, image: built.image };
     }
     if (!["promote", "rollback"].includes(action))
@@ -162,6 +139,7 @@ export async function release(action, expectedMcp) {
         await verifyControlRequirements(az, c, manifest.schemaPlan);
         await verifyControlRequirements(az, c, manifest.schemaPlan, revision);
     }
+    if (manifest.migration) await verifyMigration(az, c, manifest, manifest.schemaPlan, manifest.migration);
     await verifySchemaCompatibility(az, c, manifest, action);
     if (!selected.active)
         await az(["containerapp", "revision", "activate", ...target, "--revision", revision, "-o", "none"]);

@@ -51,11 +51,11 @@ export async function breadcrumbPreflight(call, c, store, read = readBlob) {
   if (job.retry !== 0 || job.parallelism !== 1 || job.completions !== 1) throw new Error("migration_execution_policy_unproven");
   await read(call, `https://${store.account}.blob.core.windows.net/${store.container}/v1/access-probe.json`);
 }
-export function receipt(eventsInput, context, execution, plan, now = Date.now(), observe = () => {}) {
+export function receipt(eventsInput, context, execution, plan, now = Date.now(), observe = () => {}, {reuse = false} = {}) {
   validateMigrationContext(context);
   const requested = Date.parse(context.requestedAt);
   if (now - requested > 30 * 86400_000) throw new Error("migration_receipt_expired");
-  if (now - requested > 60 * 60_000 || requested > now + 60_000) throw new Error("migration_receipt_stale");
+  if ((!reuse && now - requested > 60 * 60_000) || requested > now + 60_000) throw new Error("migration_receipt_stale");
   const events = new Map();
   for (const e of eventsInput) {
     if (!e || typeof e !== "object" || Array.isArray(e)) throw new Error("migration_receipt_invalid");

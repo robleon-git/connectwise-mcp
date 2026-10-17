@@ -1,4 +1,5 @@
-import { verifyControlRequirements, verifySchemaCompatibility } from "./migration-features.mjs";
+import { executeMigration, verifyMigration } from "./migration-execution.mjs";
+import { migrationPlan, readControlRequirements, prepareSchemaCompatibility, verifyControlRequirements, verifySchemaCompatibility } from "./migration-features.mjs";
 // Explicit MCP-affecting delivery only. The control-only release/impact guard is unchanged.
 import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
@@ -96,7 +97,7 @@ export async function mcpRelease(action,inputs={},dependencies={}) {
   const head=(await run("git",["rev-parse","HEAD"])).stdout.trim();
   if(!shaPattern.test(head)||inputs.reviewedSha!==head)throw new Error("reviewed_source_mismatch");
   if((await run("git",["status","--porcelain"])).stdout.trim())throw new Error("dirty_release_source");
-  if(!["build","prepare-control","promote-control","candidate","accept-candidate","cutover","rollback","cleanup"].includes(action))throw new Error("invalid_mcp_release_action");
+  if(!["build","migrate","prepare-control","promote-control","candidate","accept-candidate","cutover","rollback","cleanup"].includes(action))throw new Error("invalid_mcp_release_action");
   const confirm=()=>{if(inputs.approval!==`${action}:${head}`)throw new Error("explicit_owner_action_approval_required");};confirm();
   await (dependencies.assertSubscription||assertSubscription)(c);
   const target=["-n",MCP_TARGET,"-g",c.sharedResourceGroup];
@@ -165,6 +166,7 @@ export async function mcpRelease(action,inputs={},dependencies={}) {
     if(inputs.ownerBaselineConnected!==true||inputs.baselineReadToolsVerified!==true)throw new Error("fresh_owner_and_inventory_baseline_required");
     stage="baseline";
     const before=await current();await publicSmoke();stage="release";
+    const schemaPlan=await migrationPlan(await readControlRequirements(call,c));
     const build=async(repository,dockerfile)=>{
       const exists=await call(["acr","repository","list","-n",c.registry,"--query",`contains(@, '${repository}')`,"-o","tsv"]);
       if(exists==="true"&&await call(["acr","repository","show-tags","-n",c.registry,"--repository",repository,"--query",`contains(@, '${head}')`,"-o","tsv"])==="true")throw new Error("immutable_build_already_exists");
@@ -174,20 +176,47 @@ export async function mcpRelease(action,inputs={},dependencies={}) {
       return `${c.registry}.azurecr.io/${repository}@${await call(["acr","manifest","show-metadata","--registry",c.registry,"--name",`${repository}:${head}`,"--query","digest","-o","tsv"])}`;
     };
     const mcp=mcpImage(c,await build("connectwise-mcp","Dockerfile")),control=controlImage(c,await build("connectwise-control-api","Dockerfile.control-plane"));
-    await save({fingerprintVersion:FINGERPRINT_VERSION,sha:head,mcpImage:mcp,controlImage:control,baseline:before,baselineReadToolsVerified:true,ownerBaselineConnected:true});
+    await save({fingerprintVersion:FINGERPRINT_VERSION,sha:head,mcpImage:mcp,controlImage:control,baseline:before,baselineReadToolsVerified:true,ownerBaselineConnected:true,schemaPlan,
+      buildProvenance:{action:"build",run:process.env.GITHUB_RUN_ID,attempt:process.env.GITHUB_RUN_ATTEMPT}});
     return {built:true};
   }
   stage="baseline";
   const state=await load();
   if(action!=="rollback"&&action!=="cleanup")await unchanged(state);
   stage="release";
+  const built={sha:head,image:state.controlImage};
+  const verifyMigrationRecord=dependencies.verifyMigration||verifyMigration;
+  const schemaProof=dependencies.prepareSchemaCompatibility||prepareSchemaCompatibility;
+  let plan;
+  if(state.schemaPlan&&["candidate","accept-candidate","cutover"].includes(action)&&!state.migration)throw new Error("migration_evidence_required");
+  if(action==="migrate"||state.migration&&["candidate","accept-candidate","prepare-control","promote-control","cutover","rollback"].includes(action)) {
+    plan=await migrationPlan(await readControlRequirements(call,c));
+    if(canonicalJson(state.schemaPlan)!==canonicalJson(plan))throw new Error("migration_feature_plan_drift");
+    if(state.migration)await verifyMigrationRecord(call,c,built,plan,state.migration);
+  }
+  if(action==="migrate") {
+    if(state.buildProvenance?.action!=="build"||!/^[1-9][0-9]*$/.test(state.buildProvenance?.run||"")||!/^[1-9][0-9]*$/.test(state.buildProvenance?.attempt||""))throw new Error("migration_build_provenance_missing");
+    const proof=await schemaProof(call,c,built,plan,run);
+    if(proof.target.sha!==head||proof.target.mcpImage!==state.mcpImage||proof.target.controlImage!==state.controlImage||
+       proof.serving.mcp.image!==state.baseline.image||proof.serving.mcp.revision!==state.baseline.revision||!proof.compatible||!proof.rollback.eligible)throw new Error("schema_compatibility_unproven");
+    if(state.migration) {
+      if(canonicalJson(state.migration.schemaCompatibility)!==canonicalJson(proof))throw new Error("schema_compatibility_unproven");
+      return {migrationProven:true,reused:true};
+    }
+    const checkpoint=async progress=>{state.migration={version:"release-migration-v1",status:"unproven",plan,schemaCompatibility:proof,...progress};await save(state);};
+    const migration=await (dependencies.executeMigration||executeMigration)(call,c,built,plan,{checkpoint,write});
+    state.migration={...migration,schemaCompatibility:proof};await unchanged(state);await verifyFeatures(call,c,plan);
+    if(canonicalJson(await schemaProof(call,c,built,plan,run))!==canonicalJson(proof))throw new Error("schema_compatibility_baseline_changed");
+    await save(state);
+    return {migrationProven:true,execution:migration.execution,appliedIds:migration.result.appliedIds,deferredIds:migration.result.deferredIds};
+  }
   if(action==="prepare-control") {
     if(!/^[A-Za-z0-9._-]{1,256}$/.test(inputs.linkingClientId||""))throw new Error("fixed_linking_client_required");
     // Invalidate prior control promotion before preparation; preserve MCP acceptance and rollback evidence.
     state.controlPromoted=false;await save(state);
     // Compute the Slice 3 condition inside preparation before any live mutation.
     await write(".delivery/built-image.json",JSON.stringify({sha:head,image:state.controlImage})+"\n");
-    await (dependencies.controlRelease||controlRelease)("prepare-slice3",{image:state.mcpImage,baseline:state.baseline});
+    await (dependencies.controlRelease||controlRelease)("prepare-slice3",{image:state.mcpImage,baseline:state.baseline,migrationRequired:Boolean(state.schemaPlan),...(state.migration?{migration:state.migration}:{})});
     const control=JSON.parse(await read(".delivery/control-release.json","utf8"));
     if(control.sha!==head||control.image!==state.controlImage)throw new Error("control_artifact_mismatch");
     if (!control.schemaCompatibility || control.schemaCompatibility.target.mcpImage !== state.mcpImage) throw new Error("schema_compatibility_unproven");
