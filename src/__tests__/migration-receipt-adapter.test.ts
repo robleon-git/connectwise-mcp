@@ -16,6 +16,12 @@ const store={account:"monotorrcwreceipts6689",container:"migration-receipts"};
 const c={subscriptionId:"synthetic-subscription",resourceGroup:"synthetic-group",migrationJob:"synthetic-job",location:"eastus"};
 const token="synthetic-private-token-canary",url=`https://${store.account}.blob.core.windows.net/${store.container}/v1/access-probe.json`;
 const network=vi.fn();
+// Assert only the executed program/argv; never serialize inherited environment or options.
+function expectReadOnlyCommands(calls: readonly (readonly unknown[])[]) {
+ const commands=calls.map(([executable,args])=>[executable,args]);
+ for(const [executable]of commands)expect(executable).toBe("az");
+ expect(JSON.stringify(commands)).not.toMatch(/"(?:list|create|update|set|start|delete|put|post|patch|replica|logs)"|listKeys|log[-]?analytics|OperationalInsights/i);
+}
 beforeEach(()=>{processBoundary.execute.mockReset();network.mockReset();vi.stubGlobal("fetch",network);});
 afterEach(()=>{vi.restoreAllMocks();vi.unstubAllGlobals();vi.unstubAllEnvs();});
 describe("mcpAz options contract",()=>{
@@ -59,11 +65,12 @@ describe("real receipt reader through the production mcpAz adapter",()=>{
   processBoundary.execute.mockResolvedValue({stdout:token});network.mockResolvedValue(new Response(null,{status:404,headers:{"x-ms-error-code":"BlobNotFound"}}));await expect(readBlob(mcpAz,url)).resolves.toBeUndefined();
  });
  it("verifies correlated start/completion through the real reader/adapter after replicas are gone",async()=>{
+  vi.stubEnv("GITHUB_ARTIFACTS_LIST","list create update set start loganalytics replica listKeys");
   const plan=await migrationPlan("core"),context=releaseMigrationContext({sha:"a".repeat(40),image:"monotorrdevacr6689.azurecr.io/connectwise-control-api@sha256:"+"b".repeat(64)},plan,{GITHUB_REPOSITORY:"robleon-git/connectwise-mcp",GITHUB_RUN_ID:"123",GITHUB_RUN_ATTEMPT:"1"}),execution="synthetic-execution";
   const result={requirements:plan.requirements,applied:1,appliedIds:["0008_account_name_edit"],deferredIds:plan.optionalIds,installedOptionalIds:[]};
   const start=breadcrumb(context,execution,"start"),end=breadcrumb(context,execution,"success",result);processBoundary.execute.mockResolvedValue({stdout:token});
   network.mockImplementation(async(requestUrl:string)=>new Response(JSON.stringify(requestUrl.endsWith("start.json")?start:end),{status:200}));
-  await expect(pollReceipt(mcpAz,context,execution,plan,{store})).resolves.toMatchObject({execution,result});expect(network.mock.calls.map(c=>c[0])).toEqual([receiptUrl(store,context,execution,"start"),receiptUrl(store,context,execution,"completion")]);expect(processBoundary.execute).toHaveBeenCalledTimes(2);expect(JSON.stringify(processBoundary.execute.mock.calls)).not.toMatch(/list|loganalytics|replica|update|start/);
+  await expect(pollReceipt(mcpAz,context,execution,plan,{store})).resolves.toMatchObject({execution,result});expect(network.mock.calls.map(c=>c[0])).toEqual([receiptUrl(store,context,execution,"start"),receiptUrl(store,context,execution,"completion")]);expect(processBoundary.execute).toHaveBeenCalledTimes(2);expectReadOnlyCommands(processBoundary.execute.mock.calls);
  });
 });
 describe("real migration receipt preflight through the production adapter",()=>{
@@ -75,11 +82,48 @@ describe("real migration receipt preflight through the production adapter",()=>{
   return {stdout:JSON.stringify(target.includes("managementPolicies")?resources.lifecycle:target.includes("containers/")?resources.container:target.includes("blobServices/")?resources.service:resources.account)};
  });return resources;}
  it("reaches the exact access-probe GET using existing OIDC, with no mutation or Blob listing",async()=>{
+  vi.stubEnv("GITHUB_ARTIFACTS_LIST","list create update set start loganalytics replica listKeys");
   metadata();network.mockResolvedValue(new Response(null,{status:404,headers:{"x-ms-error-code":"BlobNotFound"}}));await expect(breadcrumbPreflight(mcpAz,c,store)).resolves.toBeUndefined();expect(network).toHaveBeenCalledExactlyOnceWith(url,expect.objectContaining({method:"GET",redirect:"error"}));expect(processBoundary.execute).toHaveBeenCalledTimes(6);
-  expect(processBoundary.execute.mock.calls.every(([,args])=>args.includes("get")||args.includes("show")||args.includes("get-access-token"))).toBe(true);expect(JSON.stringify(processBoundary.execute.mock.calls)).not.toMatch(/listKeys|loganalytics|"start"|"update"|"create"|"set"/);expect(processBoundary.execute.mock.calls.at(-1)![2]).toMatchObject({timeout:30000});
+  expect(processBoundary.execute.mock.calls.every(([,args])=>args.includes("get")||args.includes("show")||args.includes("get-access-token"))).toBe(true);expectReadOnlyCommands(processBoundary.execute.mock.calls);expect(processBoundary.execute.mock.calls.at(-1)![2]).toMatchObject({timeout:30000});
  });
  it("still rejects unsafe receipt-store policy before an access probe or mutation",async()=>{
   const resources=metadata();resources.account.properties.allowSharedKeyAccess=true;
   await expect(breadcrumbPreflight(mcpAz,c,store)).rejects.toThrow("migration_store_security_unproven");expect(network).not.toHaveBeenCalled();expect(processBoundary.execute.mock.calls.every(([,args])=>args.includes("get"))).toBe(true);
+ });
+});
+
+
+describe("read-only command assertion boundary",()=>{
+ it("ignores inherited forbidden words and all execution options/metadata",()=>{
+  const options={env:{GITHUB_ARTIFACTS_LIST:"list create update set start loganalytics replica listKeys"},timeout:30000,toJSON(){throw Error("options must not be inspected");}};
+  expect(()=>expectReadOnlyCommands([["az",["account","get-access-token"],options]])).not.toThrow();
+ });
+ it.each([
+  ["account","get-access-token","--resource","https://storage.azure.com/"],
+  ["resource","show","--ids","/synthetic/resource"],
+  ["containerapp","job","show","--name","synthetic-job"],
+  ["containerapp","job","show","--query","properties.configuration.replicaRetryLimit"]
+ ])("accepts safe argv %j",(...args:string[])=>{
+  expect(()=>expectReadOnlyCommands([["az",args]])).not.toThrow();
+ });
+ it.each([
+  ["storage","blob","list"],
+  ["storage","container","list"],
+  ["containerapp","job","create"],
+  ["containerapp","job","update"],
+  ["containerapp","ingress","traffic","set"],
+  ["containerapp","job","start"],
+  ["monitor","log-analytics","query"],
+  ["rest","--url","https://management.azure.com/providers/Microsoft.OperationalInsights/workspaces/synthetic/query"],
+  ["containerapp","job","replica","logs","show"],
+  ["storage","account","keys","list"],
+  ["rest","--url","https://management.azure.com/synthetic/listKeys"],
+  ["rest","--method","POST"],
+  ["resource","delete"]
+ ])("rejects forbidden argv %j",(...args:string[])=>{
+  expect(()=>expectReadOnlyCommands([["az",args,{env:{SAFE:"value"}}]])).toThrow();
+ });
+ it("checks the executable as well as argv",()=>{
+  expect(()=>expectReadOnlyCommands([["untrusted-program",["account","show"]]])).toThrow();
  });
 });
