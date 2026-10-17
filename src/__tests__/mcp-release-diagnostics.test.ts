@@ -13,7 +13,7 @@ describe("MCP-only safe Azure failure categories", () => {
     for (const stderr of [`ERROR: (${code}) ${canary}`, JSON.stringify({ error: { code, message: canary, headers: canary } })]) {
       expect(azureFailureCategory(stderr)).toBe(category);
       const run = vi.fn().mockRejectedValue(Object.assign(new Error(canary), { stderr, stdout: canary, request: canary }));
-      const error = await mcpAz(["rest", "--method", "put"], run).catch((error: unknown) => error);
+      const error = await mcpAz(["rest", "--method", "put"], {}, run).catch((error: unknown) => error);
       const output = releaseDiagnostic(markReleaseStage(error, "candidate_arm_put"));
       expect(output).toEqual({ mcpReleaseSucceeded: false, stage: "candidate_arm_put", category });
       expect(JSON.stringify(output)).not.toContain(canary);

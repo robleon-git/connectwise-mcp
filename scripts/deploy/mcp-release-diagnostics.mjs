@@ -38,10 +38,15 @@ export function azureFailureCategory(stderr) {
   const mapped = new Set(codes.map(code => azureCodes[code]));
   return mapped.size === 1 ? [...mapped][0] : "unknown";
 }
-export async function mcpAz(args, run = execute) {
+// Delivery callers use (args, options); executor injection is a separate test seam.
+export async function mcpAz(args, options = {}, run = execute) {
   try {
+    if (!options || typeof options !== "object" || Array.isArray(options) ||
+        Object.keys(options).some(key => key !== "timeout")) throw new Error();
+    const timeout = options.timeout === undefined ? 120000 : options.timeout;
+    if (!Number.isInteger(timeout) || timeout < 1 || timeout > 120000) throw new Error();
     return (await run("az", [...args, "--only-show-errors"], {
-      timeout: 120000, maxBuffer: 1024 * 1024,
+      timeout, maxBuffer: 1024 * 1024,
       env: { ...process.env, AZURE_EXTENSION_USE_DYNAMIC_INSTALL: "no" }
     })).stdout.trim();
   } catch (error) {
