@@ -375,9 +375,125 @@ The following categories are planned but not yet fully defined.
 
 ## Service Desk Discipline
 
-Purpose: determine whether service activity is being recorded consistently enough to support useful operational and labor analysis.
+### Goal
 
-Important constraint: service and project activity must never be blended.
+Determine whether service data is complete and structured enough to measure client service consumption.
+
+This category is intentionally not a service-desk maturity audit. Monotorr should not grade SLA design, priority schemes, type/subtype/item usage, dispatch process, escalation workflow, ticket closure hygiene, or queue-management conventions.
+
+The business question is:
+
+> Can Monotorr trust the service data enough to understand how much support effort each client consumes?
+
+That information becomes a foundation for lightweight client profitability and operational analysis.
+
+### Check 1: Service Activity Is Being Captured
+
+Determine whether enough service ticket and time-entry data exists to represent the service work being performed.
+
+The goal is not perfect ticket hygiene or complete minute-by-minute accounting. The goal is to establish whether the dataset is sufficiently complete for useful client-level analysis.
+
+Potential signals include:
+
+- recent service tickets;
+- service time entries;
+- distribution of time across active service clients;
+- obvious gaps where substantial ticket activity exists with little or no recorded time.
+
+If the data appears incomplete, describe the limitation without turning the assessment into a ticket-process audit.
+
+### Check 2: Service and Project Work Can Be Separated
+
+Service and project activity must never be silently blended.
+
+Where ConnectWise Projects is used, project tickets/tasks/time should remain separate from normal service activity.
+
+Some MSPs do project work through service boards instead of the Projects module. This can be especially common in T&M-heavy environments.
+
+If project-like work appears to be mixed into service activity, surface that as a data-confidence limitation rather than a service-desk failure.
+
+Example:
+
+> Project-like work appears to be mixed into service activity. Client service-consumption metrics may therefore include project labor.
+
+The assessment must not compare or aggregate project and service effort as though they are the same type of work.
+
+### Check 3: Client Service Consumption Is Measurable
+
+Determine whether Monotorr can reliably calculate service consumption by client.
+
+Useful measures may include:
+
+- total service hours;
+- service hours per month;
+- ticket count;
+- average time per ticket;
+- trend over time.
+
+The key output is not a service-desk score. It is confidence that Monotorr can say, for a given client:
+
+> This client consumes approximately X hours of service time per month and generates Y service tickets.
+
+This check should exclude project activity wherever possible.
+
+### Check 4: Service Consumption Can Be Normalized
+
+Determine whether enough customer-size data exists to make service consumption meaningful across clients.
+
+Potential denominators may include:
+
+- managed users;
+- managed workstations;
+- managed devices;
+- agreement quantities;
+- other stable configuration counts that reasonably represent customer size.
+
+Monotorr should not require every MSP to use the same denominator.
+
+The goal is to determine whether service effort can be normalized into measures such as:
+
+- service hours per managed user;
+- service hours per managed workstation;
+- service hours per managed device.
+
+This allows more meaningful comparison than raw ticket or hour counts alone.
+
+If the denominator data is not reliable enough, report that limitation rather than inventing a normalized metric.
+
+### Agreement Attribution Is an Advanced Practice
+
+Entering service time directly against agreements can improve:
+
+- agreement consumption analysis;
+- service-cost reporting;
+- agreement-level profitability;
+- margin confidence.
+
+However, this is a ConnectWise usage preference and a more advanced reporting practice.
+
+Do not score an MSP down solely because service time is associated with the company rather than directly with an agreement.
+
+Surface it as a maturity opportunity when relevant.
+
+### Profitability Context
+
+Service Desk Discipline is one input into lightweight profitability analysis.
+
+When service consumption is measurable and member labor cost data is available, Monotorr may eventually estimate client labor cost.
+
+When product costs and agreement structure are also sufficiently complete, Monotorr can move toward a broader profitability estimate.
+
+Monotorr should communicate confidence rather than overstate precision.
+
+For example:
+
+> Profitability estimate: Moderate confidence. Service labor appears complete, but product costs are missing for several agreement additions.
+
+The assessment should distinguish:
+
+- what can be calculated confidently;
+- what can be estimated;
+- what should not yet be claimed.
 
 ## Labor Cost Accuracy
 
