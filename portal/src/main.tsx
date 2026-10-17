@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./style.css";
+import { AccountName } from "./AccountName";
 import { Billing } from "./Billing";
 import { AiSetup } from "./AiSetup";
 import { ConnectionManagement } from "./ConnectionManagement";
@@ -36,7 +37,7 @@ export function PortalContent({ status, loading, error, setup, onRetry, onSetup,
             <p>Connect ConnectWise first. Then confirm the email sign-in you’ll use with your AI.</p> : <AiSetup />}
         </section>
         <section aria-labelledby="account-heading"><h2 id="account-heading">Account</h2>
-          {status.account.name && <p>{status.account.name}</p>}
+          <AccountName name={status.account.name} onSaved={onAccountRefresh} />
           <p className="status">{allowed ? status.entitlement.accessKind === "trial" ? "Trial active" : "Access active" : expired ? "Access expired" : "Access not active"}</p>
           {status.entitlement.trial && <p>Trial expiration: <time dateTime={status.entitlement.trial.expiresAt}>{new Date(status.entitlement.trial.expiresAt).toLocaleString()}</time></p>}
           <Billing onAccountRefresh={onAccountRefresh} />

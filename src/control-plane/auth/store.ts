@@ -6,6 +6,15 @@ export const hashToken = (token: string) => createHash("sha256").update(token).d
 export const SESSION_SECONDS = 24 * 60 * 60;
 export const FLOW_SECONDS = 10 * 60;
 export interface CustomerContext { userId: string; accountId: string; name: string | null }
+export class AccountNameError extends Error {
+  constructor(public readonly code: "invalid_name" | "forbidden") { super(code); }
+}
+export function accountName(value: unknown): string {
+  if (typeof value !== "string" || /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(value)) throw new AccountNameError("invalid_name");
+  const name = value.trim();
+  if (!name || name.length > 120) throw new AccountNameError("invalid_name");
+  return name;
+}
 export class CustomerStore {
   constructor(private readonly pool: Pool) {}
   async login(identity: MicrosoftIdentity): Promise<{ token: string; context: CustomerContext }> {
@@ -57,6 +66,17 @@ export class CustomerStore {
     if (r.rows.length === 0) throw new CustomerAuthError();
     return { account: { id: context.accountId, name: context.name }, entitlement: evaluateEntitlements(r.rows),
       connectwise: { status: "not_configured" }, nextAction: "connect_connectwise" };
+  }
+  async rename(context: CustomerContext, value: unknown): Promise<{ name: string }> {
+    const name = accountName(value);
+    // Session authority is checked again in the update, never taken from a request account ID.
+    const result = await this.pool.query<{ name: string }>(`UPDATE public.accounts a SET name=$3
+      FROM public.account_memberships m, public.users u
+      WHERE a.id=$1 AND m.account_id=a.id AND m.user_id=$2 AND m.role='owner'
+      AND u.id=m.user_id AND u.status='active' AND a.status='active' RETURNING a.name`,
+      [context.accountId, context.userId, name]);
+    if (result.rows.length !== 1) throw new AccountNameError("forbidden");
+    return { name: result.rows[0].name };
   }
   async logout(token: string | undefined) {
     if (token && /^[A-Za-z0-9_-]{43}$/.test(token)) await this.pool.query("UPDATE public.auth_sessions SET revoked_at=now() WHERE token_hash=$1", [hashToken(token)]);

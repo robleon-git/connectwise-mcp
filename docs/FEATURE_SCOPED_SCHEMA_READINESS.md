@@ -110,3 +110,24 @@ continues to use the existing serialized production workflow and owner gates.
 Release A changes runtime verification, so the cumulative release remains
 MCP-affecting. It needs a new exact-SHA build and fresh candidate acceptance.
 No SQL, authentication, entitlement or tool-schema changes are part of A.
+
+## Release B: required account-name grant
+
+Release B restores the reviewed account-name feature and the exact 0008 SQL.
+The execution manifest now contains 0001–0008; `0008_account_name_edit` is core
+and no longer appears in the future catalog. The catalog is empty, while its
+validation and all fail-closed runtime/history rules remain unchanged.
+
+With billing OFF, the normal `core` plan requires 0001–0005 plus 0008 and defers
+0006/0007. Against the current production ledger, only 0008 is missing. Both
+Release B readiness gates reject that ledger until 0008 is installed.
+
+Production Release A (`1d13310c600c35e3c42a5d04b21927b6d7422c68`) remains the
+rollback floor after 0008, through its exact checksum-pinned catalog. Retain its
+MCP/control pair. The historical 217e1d artifacts are not eligible rollback
+choices after 0008. Rollback restores a compatible runtime; it never removes the
+migration row, reverses the grant, or runs an old migration package. Existing
+preparation/promotion/cutover guards enforce the artifact-bound compatibility
+proof. Release B remains MCP-affecting and needs fresh same-SHA provenance and
+candidate acceptance before deployment. No production migration is performed by
+repository preparation.

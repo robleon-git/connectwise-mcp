@@ -1,45 +1,54 @@
 import { describe, it, expect, vi } from "vitest";
 import { readFile } from "node:fs/promises";
 import { MIGRATIONS, FORWARD_COMPATIBILITY, migrationHistoryReady, validateCompatibilityCatalog, validateMigrationHistory } from "../database/migrationManifest.js";
-import { historicalRuntime, ORIGINAL_SHA, RELEASE_B_SHA, ORIGINAL_SOURCE, RELEASE_B_SOURCE, FUTURE_SQL } from "./fixtures/migration-compatibility-database.js";
+import { historicalRuntime, ORIGINAL_SHA, RELEASE_A_SHA, RELEASE_B_SHA, ORIGINAL_SOURCE, RELEASE_A_SOURCE, FUTURE_SQL } from "./fixtures/migration-compatibility-database.js";
 // @ts-expect-error Delivery scripts have no declarations.
 import { readMigrationContract } from "../../scripts/deploy/control-condition.mjs";
 // @ts-expect-error Delivery scripts have no declarations.
 import { schemaCompatibilityProof, prepareSchemaCompatibility, verifySchemaCompatibility, migrationPlan } from "../../scripts/deploy/migration-features.mjs";
-const current = MIGRATIONS.filter(item=>item.requirement==="core").map(({id,checksum})=>({id,checksum}));
-const future = {...FORWARD_COMPATIBILITY[0]};
+const releaseA=historicalRuntime(RELEASE_A_SHA);
+const current = releaseA.MIGRATIONS.filter(item=>item.requirement==="core").map(({id,checksum})=>({id,checksum}));
+const future = {...releaseA.FORWARD_COMPATIBILITY![0]};
+const complete=[...current,future];
 describe("pinned forward history and historical readiness matrix",()=>{
  const original=historicalRuntime(ORIGINAL_SHA), next=historicalRuntime(RELEASE_B_SHA);
  it.each([
   ["original", original.migrationHistoryReady, true, false],
-  ["Release A", migrationHistoryReady, true, true],
-  ["Release B", next.migrationHistoryReady, false, true],
+  ["Release A", releaseA.migrationHistoryReady, true, true],
+  ["Release B reviewed feature", next.migrationHistoryReady, false, true],
+  ["Release B current", migrationHistoryReady, false, true],
  ] as const)("%s current/future compatibility",(_name,check,before,after)=>{
   expect(check(current)).toBe(before);expect(check([...current,future])).toBe(after);
  });
- it("does not require the catalog entry or disabled billing migrations",()=>{
-  expect(MIGRATIONS).toHaveLength(7);expect(MIGRATIONS.some(m=>m.id===future.id as string)).toBe(false);
-  expect(migrationHistoryReady(current)).toBe(true);expect(()=>validateMigrationHistory([...current,future])).toThrow("migration_history_mismatch");
+ it("requires 0008 in execution rather than a redundant future catalog",()=>{
+  expect(MIGRATIONS).toHaveLength(8);expect(FORWARD_COMPATIBILITY).toEqual([]);
+  expect(MIGRATIONS.find(m=>m.id===future.id)).toMatchObject({...future,requirement:"core"});
+  expect(migrationHistoryReady(current)).toBe(false);expect(migrationHistoryReady(complete)).toBe(true);
+  expect(()=>validateMigrationHistory(complete)).not.toThrow();expect(()=>releaseA.validateMigrationHistory(complete)).toThrow("migration_history_mismatch");
+ });
+ it("retained Release A rejects wrong catalog checksums and unknown forward rows",()=>{
+  expect(releaseA.migrationHistoryReady([...current,{...future,checksum:"0".repeat(64)}])).toBe(false);
+  expect(releaseA.migrationHistoryReady([...current,{id:"0009_unknown",checksum:future.checksum}])).toBe(false);
  });
  it.each([
   {id:"9999_unknown",checksum:future.checksum}, {...future,checksum:"0".repeat(64)},
   {id:"0000_unknown",checksum:future.checksum}, {...future,checksum:null}, {id:1,checksum:future.checksum},
   null, {}, current[0],
  ])("rejects arbitrary, earlier, malformed and duplicate history %j",row=>{
-  expect(migrationHistoryReady([...current,row])).toBe(false);
+  expect(migrationHistoryReady([...complete,row])).toBe(false);
  });
  it("known installed corruption is never masked by a valid future entry",()=>{
-  for(const known of MIGRATIONS)expect(migrationHistoryReady([...current.filter(row=>row.id!==known.id),{id:known.id,checksum:"0".repeat(64)},future])).toBe(false);
-  expect(migrationHistoryReady([...current.slice(1),future])).toBe(false);
+  for(const known of MIGRATIONS)expect(migrationHistoryReady([...complete.filter(row=>row.id!==known.id),{id:known.id,checksum:"0".repeat(64)}])).toBe(false);
+  expect(migrationHistoryReady(complete.slice(1))).toBe(false);
  });
  it.each([null,{},[future,future],[{...future,id:"0007_unknown"}],[{...future,id:"0008_wrong"},future],[{...future,checksum:"bad"}],[{...future,requirement:"core"}]])("invalid catalog metadata fails even with no future row %j",catalog=>{
   expect(()=>validateCompatibilityCatalog(catalog as never,MIGRATIONS)).toThrow("invalid_migration_catalog");
-  expect(migrationHistoryReady(current,[],MIGRATIONS,catalog as never)).toBe(false);
+  expect(migrationHistoryReady(complete,[],MIGRATIONS,catalog as never)).toBe(false);
  });
  it("allows non-contiguous explicitly pinned future IDs, never numeric blanket acceptance",()=>{
   const catalog=[{id:"0010_future",checksum:"a".repeat(64)}];
-  expect(migrationHistoryReady([...current,...catalog],[],MIGRATIONS,catalog)).toBe(true);
-  expect(migrationHistoryReady([...current,{...catalog[0],id:"0009_unknown"}],[],MIGRATIONS,catalog)).toBe(false);
+  expect(migrationHistoryReady([...complete,...catalog],[],MIGRATIONS,catalog)).toBe(true);
+  expect(migrationHistoryReady([...complete,{...catalog[0],id:"0009_unknown"}],[],MIGRATIONS,catalog)).toBe(false);
  });
 });
 
@@ -48,9 +57,9 @@ async function transport() {
  const a="a".repeat(40), b="b".repeat(40), sha="c".repeat(40), registry="fixture";
  const c={registry,controlApi:"connectwise-control-api",resourceGroup:"control-rg",sharedResourceGroup:"mcp-rg"};
  const originalSource=ORIGINAL_SOURCE;
- const aSource=await readFile("src/database/migrationManifest.ts","utf8");
- const bSource=RELEASE_B_SOURCE;
- const sources:Record<string,string>={[a]:originalSource,[b]:aSource,[sha]:aSource};
+ const aSource=RELEASE_A_SOURCE;
+ const bSource=await readFile("src/database/migrationManifest.ts","utf8");
+ const sources:Record<string,string>={[a]:originalSource,[b]:aSource,[sha]:bSource};
  const files:Record<string,string>={};for(const m of MIGRATIONS)files[m.file]=await readFile("database/migrations/"+m.file,"utf8");
  files[future.id+".sql"]=FUTURE_SQL;
  const run=vi.fn(async(_cmd:string,args:string[])=>{
@@ -60,8 +69,8 @@ async function transport() {
  });
  const images:Record<string,{sha:string;digest:string}>={};
  const image=(kind:string,ref:string)=>{const digest="sha256:"+(ref===a?"1":ref===b?"2":"3").repeat(64);const v=`${registry}.azurecr.io/connectwise-${kind}@${digest}`;images[v]={sha:ref,digest};return v;};
- const oldMcp=image("mcp",a),oldControl=image("control-api",a),newMcp=image("mcp",sha),newControl=image("control-api",sha);
- let servingSha=a;
+ const oldMcp=image("mcp",b),oldControl=image("control-api",b),newMcp=image("mcp",sha),newControl=image("control-api",sha);
+ let servingSha=b;
  const live={mcp:"connectwise-mcp-pilot--prior","control-api":"connectwise-control-api--prior"};
  const health:Record<string,string>={};
  const call=vi.fn(async(args:string[])=>{
@@ -80,7 +89,7 @@ async function transport() {
  return {a,b,sha,c,run,call,sources,bSource,aSource,oldMcp,oldControl,newMcp,newControl, image, setServing:(ref:string)=>{servingSha=ref;}, built:{sha,image:newControl}, plan:await migrationPlan("core"),live,health};
 }
 describe("artifact-bound delivery schema compatibility",()=>{
- it("A prepares against original serving pair; proof names explicit rollback images and pins contracts/plan",async()=>{
+ it("B prepares against Release A serving pair; proof names explicit rollback images and pins contracts/plan",async()=>{
   const t=await transport();const proof=await prepareSchemaCompatibility(t.call,t.c,t.built,t.plan,t.run);
   expect(proof.compatible).toBe(true);expect(proof.target).toMatchObject({sha:t.sha,mcpImage:t.newMcp,controlImage:t.newControl,plan:t.plan});
   expect(proof.serving.mcp.image).toBe(t.oldMcp);expect(proof.rollback).toMatchObject({eligible:true,mcp:proof.serving.mcp,control:proof.serving.control});
@@ -88,12 +97,12 @@ describe("artifact-bound delivery schema compatibility",()=>{
   await expect(verifySchemaCompatibility(t.call,t.c,manifest,"promote",t.run)).resolves.toEqual(proof);
  });
  it("B cannot prepare with 0008 while original production or rollback remains eligible",async()=>{
-  const t=await transport();t.sources[t.sha]=t.bSource;const contract=await readMigrationContract(t.sha,t.run);
+  const t=await transport();t.setServing(t.a);const contract=await readMigrationContract(t.sha,t.run);
   const plan={...t.plan,requiredIds:contract.execution.filter((m:{requirement:string})=>m.requirement==="core").map((m:{id:string})=>m.id)};
   await expect(prepareSchemaCompatibility(t.call,t.c,t.built,plan,t.run)).rejects.toThrow("release_schema_incompatible");
   t.setServing(t.b);await expect(prepareSchemaCompatibility(t.call,t.c,t.built,plan,t.run)).resolves.toMatchObject({compatible:true,rollback:{eligible:true}});
  });
- it("wrong future checksum and unknown required migrations cannot be authorized",async()=>{
+ it("wrong Release A catalog checksum and absent support cannot authorize B",async()=>{
   const t=await transport();t.setServing(t.b);t.sources[t.sha]=t.bSource;
   const target=await readMigrationContract(t.sha,t.run), old=await readMigrationContract(t.b,t.run);
   const artifact={revision:"fixture--prior",image:t.oldMcp,sha:t.b,contract:old};
@@ -110,7 +119,7 @@ describe("artifact-bound delivery schema compatibility",()=>{
   await expect(verifySchemaCompatibility(t.call,t.c,manifest,"promote",t.run)).rejects.toThrow();
  });
  it("lost registry provenance, source or retained revision fails closed",async()=>{
-  const t=await transport();t.sources[t.a]="export const MIGRATIONS=load();";
+  const t=await transport();t.sources[t.b]="export const MIGRATIONS=load();";
   await expect(prepareSchemaCompatibility(t.call,t.c,t.built,t.plan,t.run)).rejects.toThrow("migration_contract_unproven");
   t.call.mockResolvedValue(JSON.stringify({digest:"sha256:"+"0".repeat(64),tags:[t.sha]}));
   await expect(prepareSchemaCompatibility(t.call,t.c,t.built,t.plan,t.run)).rejects.toThrow();
@@ -146,7 +155,7 @@ describe("compatibility proof across promotion, cutover and rollback ordering",(
  it("mixed rollback history-support sets are rejected rather than inferred compatible",async()=>{
   const t=await transport(),old=await readMigrationContract(t.a,t.run),next=await readMigrationContract(t.b,t.run);
   const artifact={revision:"fixture--prior",image:t.oldMcp,sha:t.a,contract:old};
-  expect(()=>schemaCompatibilityProof({sha:t.sha,controlImage:t.newControl,mcpImage:t.newMcp,contract:next,plan:t.plan},
+  expect(()=>schemaCompatibilityProof({sha:t.sha,controlImage:t.newControl,mcpImage:t.newMcp,contract:next,plan:{...t.plan,requiredIds:next.execution.filter((m:{requirement:string})=>m.requirement==="core").map((m:{id:string})=>m.id)}},
    {mcp:artifact,control:{...artifact,contract:next}})).toThrow("release_schema_incompatible");
  });
 });

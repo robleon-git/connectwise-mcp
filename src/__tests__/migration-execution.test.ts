@@ -31,6 +31,12 @@ describe("explicit feature-scoped migration execution",()=>{
   expect(await migrate(db as never,all,["billing"])).toEqual({applied:optional.length,requirements:["core","billing"],appliedIds:optional.map(m=>m.id),deferredIds:[],installedOptionalIds:optional.map(m=>m.id)});
   expect(await migrate(db as never,all,[])).toMatchObject({applied:0,deferredIds:[],installedOptionalIds:optional.map(m=>m.id)});
  });
+ it("Release B applies only missing 0008 under core and keeps billing deferred",async()=>{
+  const db=database(rows(core.filter(m=>m.id!=="0008_account_name_edit"))),all=await loaded();
+  expect(await migrate(db as never,all,[])).toMatchObject({applied:1,appliedIds:["0008_account_name_edit"],deferredIds:optional.map(m=>m.id),installedOptionalIds:[]});
+  expect(await migrate(db as never,all,[])).toMatchObject({applied:0,appliedIds:[]});
+  for(const m of all.filter(m=>m.requirement==="billing"))expect(db.query.mock.calls.some(([sql])=>sql===m.sql)).toBe(false);
+ });
  it("billing selection applies the complete manifest in order",async()=>{
   const db=database();expect((await migrate(db as never,await loaded(),["billing"])).appliedIds).toEqual(MIGRATIONS.map(m=>m.id));
  });
@@ -89,10 +95,10 @@ afterEach(()=>{vi.restoreAllMocks();});
 
 // Compatibility approval is not execution authority: the runner never uses the runtime catalog.
 describe('strict execution with approved forward runtime history',()=>{
- it('rejects installed 0008 and rolls back without executing or reconciling it',async()=>{
-  const {MIGRATIONS,FORWARD_COMPATIBILITY}=await import('../database/migrationManifest.js');
-  const loaded=await loadMigrations(MIGRATIONS,new URL('../../database/migrations/',import.meta.url));
-  const query=vi.fn(async()=>({rows:[...MIGRATIONS,...FORWARD_COMPATIBILITY].map(({id,checksum})=>({id,checksum}))}));
+ it('Release A execution package rejects installed 0008 without executing or reconciling it',async()=>{
+  const {MIGRATIONS}=await import('../database/migrationManifest.js');
+  const loaded=(await loadMigrations(MIGRATIONS,new URL('../../database/migrations/',import.meta.url))).filter(m=>m.id!=='0008_account_name_edit');
+  const query=vi.fn(async()=>({rows:MIGRATIONS.map(({id,checksum})=>({id,checksum}))}));
   await expect(migrate({connect:async()=>({query,release:()=>{}})} as never,loaded,[])).rejects.toThrow('migration_failed');
   expect(query.mock.calls.some(c=>(c as unknown as [string])[0]==='ROLLBACK')).toBe(true);
   expect(query.mock.calls.some(c=>loaded.some(m=>m.sql===(c as unknown as [string])[0]))).toBe(false);

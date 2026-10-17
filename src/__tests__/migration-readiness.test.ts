@@ -6,7 +6,7 @@ const core=MIGRATIONS.filter(m=>m.requirement==='core'),billing=MIGRATIONS.filte
 const history=(items:readonly {id:string;checksum:string}[]=MIGRATIONS)=>items.map(({id,checksum})=>({id,checksum}));
 describe('feature-scoped authoritative migration history',()=>{
  it('classifies core and billing once and selects by metadata rather than migration numbers',()=>{
-  expect(core).toHaveLength(5);expect(billing.map(m=>m.id)).toEqual(['0006_test_billing_foundation','0007_test_billing_checkout']);
+  expect(core).toHaveLength(6);expect(FORWARD_COMPATIBILITY).toEqual([]);expect(billing.map(m=>m.id)).toEqual(['0006_test_billing_foundation','0007_test_billing_checkout']);
   expect(requiredMigrations()).toEqual(core);expect(requiredMigrations(['billing'])).toEqual(MIGRATIONS);
   const renamed:Migration[]=[{...core[0],id:'9000_core',file:'9000_core.sql'},{...billing[0],id:'9001_feature',file:'9001_feature.sql'}];expect(requiredMigrations([],renamed)).toEqual([renamed[0]]);
  });
@@ -24,9 +24,9 @@ describe('feature-scoped authoritative migration history',()=>{
  it('database failures and malformed query results fail closed without raw errors',async()=>{expect(await migrationReadiness({query:async()=>{throw new Error('synthetic-secret');}})).toBe(false);expect(await migrationReadiness({query:async()=>({rows:null})})).toBe(false);});
  it('the shared query validates optional installed history for both callers',async()=>{const db={query:vi.fn(async()=>({rows:history(core)}))};expect(await migrationReadiness(db)).toBe(true);expect(await migrationReadiness(db,['billing'])).toBe(false);expect(db.query).toHaveBeenCalledWith('SELECT id, checksum FROM public.schema_migrations ORDER BY id');});
  it('normal execution loads all SQL and applies every migration in manifest order',async()=>{
-  const loaded=await loadMigrations(MIGRATIONS,new URL('../../database/migrations/',import.meta.url));expect(loaded).toHaveLength(7);
+  const loaded=await loadMigrations(MIGRATIONS,new URL('../../database/migrations/',import.meta.url));expect(loaded).toHaveLength(8);
   const applied:string[]=[],query=vi.fn(async(sql:string,args?:unknown[])=>{if(sql.startsWith('INSERT INTO public.schema_migrations'))applied.push(args![0] as string);return{rows:history(loaded.filter(item=>applied.includes(item.id)))};}),release=vi.fn();
-  expect(await migrate({connect:async()=>({query,release})} as never,loaded, ["billing"])).toMatchObject({applied:7});expect(applied).toEqual(MIGRATIONS.map(m=>m.id));expect(release).toHaveBeenCalledOnce();
+  expect(await migrate({connect:async()=>({query,release})} as never,loaded, ["billing"])).toMatchObject({applied:8});expect(applied).toEqual(MIGRATIONS.map(m=>m.id));expect(release).toHaveBeenCalledOnce();
  });
  it('execution rejects malformed metadata or changed SQL before connecting',async()=>{const loaded=await loadMigrations(MIGRATIONS,new URL('../../database/migrations/',import.meta.url));const connect=vi.fn();for(const bad of [[{...loaded[0],requirement:'unknown'}],[{...loaded[0],sql:'changed'}]])await expect(migrate({connect} as never,bad as never, ["billing"])).rejects.toThrow('migration_failed');expect(connect).not.toHaveBeenCalled();});
  it('execution rejects duplicate/unknown installed history without applying SQL',async()=>{const sql='SELECT 1;',manifest=[{id:'0001_example',file:'0001_example.sql',checksum:createHash('sha256').update(sql).digest('hex'),requirement:'core' as const,sql}];for(const rows of [[...history(manifest),...history(manifest)],[{id:'9999_unknown',checksum:'a'.repeat(64)}]]){const query=vi.fn(async()=>({rows}));await expect(migrate({connect:async()=>({query,release:()=>{}})} as never,manifest, ["billing"])).rejects.toThrow('migration_failed');expect(query.mock.calls.some(c=>(c as unknown as [string])[0]===sql)).toBe(false);}});
@@ -57,10 +57,15 @@ async function startup(kind:'control'|'mcp',rows:unknown,enabled=false,dbFailure
  finally {process.exitCode=priorExit;}
 }
 describe('actual control and MCP entrypoint schema gates',()=>{
- it('both actual startup paths tolerate only the pinned future row without billing',async()=>{
-  for(const kind of ['control','mcp'] as const){const x=await startup(kind,[...history(core),FORWARD_COMPATIBILITY[0]]);expect(x.listen).toHaveBeenCalledOnce();if(kind==='control'){const check=(x.createApi.mock.calls[0] as unknown as [()=>Promise<boolean>])[0];expect(await check()).toBe(true);}}
+ it('both actual startup paths accept required 0008 without billing',async()=>{
+  for(const kind of ['control','mcp'] as const){const x=await startup(kind,history(core));expect(x.listen).toHaveBeenCalledOnce();if(kind==='control'){const check=(x.createApi.mock.calls[0] as unknown as [()=>Promise<boolean>])[0];expect(await check()).toBe(true);}}
  });
 
+ it('both actual startup paths fail readiness without required 0008',async()=>{
+  const rows=history(core).filter(m=>m.id!=='0008_account_name_edit');
+  const control=await startup('control',rows);expect(await (control.createApi.mock.calls[0] as unknown as [()=>Promise<boolean>])[0]()).toBe(false);
+  const mcp=await startup('mcp',rows);expect(mcp.listen).not.toHaveBeenCalled();expect(mcp.createServer).not.toHaveBeenCalled();expect(mcp.log).toHaveBeenCalledWith('server.failed',expect.any(Object));
+ });
  it('control billing OFF passes readiness with core-only history and exposes no billing runtime',async()=>{const x=await startup('control',history(core));expect(x.listen).toHaveBeenCalledOnce();const check=(x.createApi.mock.calls[0] as unknown as [()=>Promise<boolean>])[0];expect(await check()).toBe(true);for(const f of [x.service,x.store,x.provider,x.worker,x.routes])expect(f).not.toHaveBeenCalled();expect(x.createApi.mock.calls[0]).toHaveLength(3);expect((x.createApi.mock.calls[0] as unknown[])[2]).toBeUndefined();});
  it('control core failure keeps readiness false without treating health as schema proof',async()=>{const x=await startup('control',history(core.slice(1)));const check=(x.createApi.mock.calls[0] as unknown as [()=>Promise<boolean>])[0];expect(await check()).toBe(false);expect(x.worker).not.toHaveBeenCalled();});
  it.each(billing.map(m=>m.id))('billing ON missing %s fails before constructing routes/services/worker or binding',async id=>{const x=await startup('control',history().filter(m=>m.id!==id),true);for(const f of [x.service,x.store,x.provider,x.worker,x.routes,x.createApi,x.createServer,x.listen])expect(f).not.toHaveBeenCalled();expect(x.end).toHaveBeenCalledOnce();expect(x.exitCode).toBe(1);});
