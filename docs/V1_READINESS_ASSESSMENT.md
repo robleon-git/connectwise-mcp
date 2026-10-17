@@ -497,7 +497,81 @@ The assessment should distinguish:
 
 ## Labor Cost Accuracy
 
-Purpose: determine whether active members have realistic usable hourly labor cost data and whether enough recorded labor is covered by those costs to support margin analysis.
+### Goal
+
+Determine whether Monotorr can reliably turn recorded time into labor cost.
+
+This category should remain focused on business-analysis readiness rather than member-record hygiene.
+
+### Check 1: Active Members Have Hourly Cost Data
+
+Determine whether the people performing recent service and project work have usable hourly labor cost values in ConnectWise.
+
+The important question is not whether every historical member record is complete. It is whether the members actually generating current labor have cost data.
+
+### Check 2: Labor Costs Appear Realistic and Non-Zero
+
+Look for obvious unusable cost values such as:
+
+- $0 hourly cost;
+- blank/null values;
+- placeholder values;
+- clearly implausible values that would distort labor-cost analysis.
+
+Do not assume members in similar roles should have identical costs.
+
+The purpose is only to identify values that make labor-cost calculations unreliable.
+
+### Check 3: Labor Cost Coverage Is Complete Enough for Analysis
+
+Calculate what percentage of recent recorded labor hours comes from members with usable labor cost data.
+
+This is more useful than simply counting how many members have cost fields populated.
+
+Example:
+
+> 92% of recent labor hours were entered by members with usable hourly costs.
+
+If a meaningful portion of recent labor cannot be costed, lower confidence in labor-based profitability analysis.
+
+### Check 4: All Recorded Labor Can Be Assigned a Costed Member
+
+For recent service and project labor, determine whether each time entry can be associated with a member who has usable labor cost data.
+
+The business question is:
+
+> Do we see any recorded labor that Monotorr cannot assign a labor cost to?
+
+If yes, surface a clear recommendation.
+
+Example:
+
+> Some recorded labor cannot be assigned a usable labor cost because the associated member is missing cost data. Complete the member cost fields in ConnectWise to improve labor-cost and profitability analysis.
+
+This should be framed as a direct data-readiness limitation rather than a generic member-record cleanup issue.
+
+### Output Guidance
+
+Useful outputs include:
+
+- percentage of recent labor hours with usable member cost coverage;
+- count of time entries that cannot be costed;
+- count of members responsible for uncosted labor;
+- confidence level for labor-cost analysis.
+
+Avoid exposing unnecessary employee-level detail in the summary block unless the user chooses to investigate further.
+
+### Profitability Context
+
+When recorded labor can be consistently tied to members with usable hourly costs, Monotorr can estimate client labor expense with much greater confidence.
+
+This remains an estimate of labor cost, not a full accounting-grade profitability calculation.
+
+Labor Cost Accuracy should therefore communicate confidence rather than overstate precision.
+
+Example:
+
+> Labor-cost analysis: High confidence. Nearly all recent recorded labor can be assigned to members with usable hourly cost data.
 
 ## Product Accuracy
 
