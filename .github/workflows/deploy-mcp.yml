@@ -26,14 +26,6 @@ on:
       candidate_acceptance:
         description: Allowlisted boolean acceptance record only; no identifiers or payloads
         type: string
-      owner_baseline_connected:
-        description: Fresh production ChatGPT cw_test_connection returned connected:true
-        type: boolean
-        default: false
-      baseline_read_tools_verified:
-        description: Fresh authenticated exact 39 reads / 0 writes verification passed
-        type: boolean
-        default: false
       emergency_pilot_rollback_approved:
         description: Temporary prelaunch-only pilot recovery limitations explicitly accepted
         type: boolean
@@ -106,8 +98,6 @@ jobs:
       CW_OPERATOR_CIDR: ${{ inputs.operator_cidr }}
       CW_MCP_LINK_CLIENT_ID: ${{ inputs.linking_client_id }}
       CW_CANDIDATE_ACCEPTANCE: ${{ inputs.candidate_acceptance }}
-      CW_OWNER_BASELINE_CONNECTED: ${{ inputs.owner_baseline_connected }}
-      CW_BASELINE_READ_TOOLS_VERIFIED: ${{ inputs.baseline_read_tools_verified }}
       CW_EMERGENCY_PILOT_ROLLBACK_APPROVED: ${{ inputs.emergency_pilot_rollback_approved }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683

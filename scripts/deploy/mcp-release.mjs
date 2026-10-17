@@ -163,7 +163,6 @@ export async function mcpRelease(action,inputs={},dependencies={}) {
   const unchanged=async state=>{if(canonicalJson(await current())!==canonicalJson(baseline(c,state.baseline)))throw releaseFailure("baseline_changed","production_baseline_changed");};
   const publicSmoke=()=> (dependencies.smoke||smoke)("https://api.monotorr.com","mcp");
   if(action==="build") {
-    if(inputs.ownerBaselineConnected!==true||inputs.baselineReadToolsVerified!==true)throw new Error("fresh_owner_and_inventory_baseline_required");
     stage="baseline";
     const before=await current();await publicSmoke();stage="release";
     const schemaPlan=await migrationPlan(await readControlRequirements(call,c));
@@ -176,7 +175,7 @@ export async function mcpRelease(action,inputs={},dependencies={}) {
       return `${c.registry}.azurecr.io/${repository}@${await call(["acr","manifest","show-metadata","--registry",c.registry,"--name",`${repository}:${head}`,"--query","digest","-o","tsv"])}`;
     };
     const mcp=mcpImage(c,await build("connectwise-mcp","Dockerfile")),control=controlImage(c,await build("connectwise-control-api","Dockerfile.control-plane"));
-    await save({fingerprintVersion:FINGERPRINT_VERSION,sha:head,mcpImage:mcp,controlImage:control,baseline:before,baselineReadToolsVerified:true,ownerBaselineConnected:true,schemaPlan,
+    await save({fingerprintVersion:FINGERPRINT_VERSION,sha:head,mcpImage:mcp,controlImage:control,baseline:before,schemaPlan,
       buildProvenance:{action:"build",run:process.env.GITHUB_RUN_ID,attempt:process.env.GITHUB_RUN_ATTEMPT}});
     return {built:true};
   }
@@ -304,7 +303,7 @@ export async function mcpRelease(action,inputs={},dependencies={}) {
     state.acceptance={...passed,revision,image:state.mcpImage};await save(state);return {candidateAcceptanceRecorded:true};
   }
   if(action==="cutover") {
-    if(inputs.ownerBaselineConnected!==true||inputs.baselineReadToolsVerified!==true||inputs.emergencyPilotRollbackApproved!==true)throw new Error("fresh_cutover_owner_approval_required");
+    if(inputs.emergencyPilotRollbackApproved!==true)throw new Error("pilot_rollback_approval_required");
     if(!state.controlPromoted||!state.acceptance||state.acceptance.image!==state.mcpImage)throw new Error("candidate_acceptance_missing");
     acceptance(Object.fromEntries(ACCEPTANCE_KEYS.map(k=>[k,state.acceptance[k]])));
     if(await candidateReady()!==state.acceptance.revision)throw new Error("accepted_candidate_changed");
@@ -356,7 +355,7 @@ if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href) {
     if(process.argv.length!==3)throw new Error();
     requireManualMcpWorkflow(process.env);
     const inputs={reviewedSha:process.env.CW_REVIEWED_SHA,approval:process.env.CW_OWNER_ACTION_APPROVAL,operatorCidr:process.env.CW_OPERATOR_CIDR,linkingClientId:process.env.CW_MCP_LINK_CLIENT_ID,
-      ownerBaselineConnected:process.env.CW_OWNER_BASELINE_CONNECTED==="true",baselineReadToolsVerified:process.env.CW_BASELINE_READ_TOOLS_VERIFIED==="true",emergencyPilotRollbackApproved:process.env.CW_EMERGENCY_PILOT_ROLLBACK_APPROVED==="true",
+      emergencyPilotRollbackApproved:process.env.CW_EMERGENCY_PILOT_ROLLBACK_APPROVED==="true",
       acceptance:process.env.CW_CANDIDATE_ACCEPTANCE?JSON.parse(process.env.CW_CANDIDATE_ACCEPTANCE):undefined};
     console.log(JSON.stringify(await mcpRelease(process.argv[2],inputs)));
   }catch(error){console.error(JSON.stringify(releaseDiagnostic(error)));process.exitCode=1;}

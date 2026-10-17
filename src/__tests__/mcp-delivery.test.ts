@@ -126,7 +126,7 @@ describe("computed Slice 3 control-only promotion",()=>{
  });
  it("schema readiness is not candidate acceptance or cutover authorization",async()=>{
   state.acceptance=undefined;
-  await expect(mcpRelease("cutover",input("cutover",{ownerBaselineConnected:true,baselineReadToolsVerified:true,emergencyPilotRollbackApproved:true}),dependencies())).rejects.toThrow("candidate_acceptance_missing");
+  await expect(mcpRelease("cutover",input("cutover",{emergencyPilotRollbackApproved:true}),dependencies())).rejects.toThrow("candidate_acceptance_missing");
   expect(mutations()).toHaveLength(0);
  });
  it("ambiguous initial traffic fails before mutation",async()=>{
@@ -156,14 +156,22 @@ describe("explicit MCP delivery boundaries",()=>{
   execute.mockImplementation(async(_name,args)=>({stdout:args[0]==="status"?" M src/index.ts":sha}));
   await expect(mcpRelease("candidate",input("candidate"),dependencies())).rejects.toThrow("dirty_release_source");expect(az).not.toHaveBeenCalled();
  });
- it("build requires fresh inventory and owner baseline before publishing images",async()=>{
-  await expect(mcpRelease("build",input("build"),dependencies())).rejects.toThrow("fresh_owner_and_inventory_baseline_required");expect(mutations()).toHaveLength(0);expect(execute.mock.calls.some(c=>c[0]==="docker")).toBe(false);
+ it("unhealthy production blocks build publication without human baseline inputs",async()=>{
+  smoke.mockRejectedValueOnce(new Error("smoke_failed"));
+  await expect(mcpRelease("build",input("build"),dependencies())).rejects.toThrow("smoke_failed");
+  expect(mutations()).toHaveLength(0);expect(execute.mock.calls.some(c=>c[0]==="docker")).toBe(false);expect(write).not.toHaveBeenCalled();
+ });
+ it("normal workflows have no owner baseline or portal-login inputs",async()=>{
+  for(const file of [".github/workflows/deploy-mcp.yml",".github/workflows/deploy.yml"]){
+   const workflow=await readFile(new URL("../../"+file,import.meta.url),"utf8");
+   expect(workflow).not.toMatch(/owner_baseline_connected|baseline_read_tools_verified|CW_OWNER_BASELINE_CONNECTED|CW_BASELINE_READ_TOOLS_VERIFIED|cw_test_connection|cw_list_boards|cw_list_priorities|portal_login|owner_login/);
+  }
  });
  it("build publishes exact-source immutable MCP/control images and retains safe baseline",async()=>{
   const original=az.getMockImplementation()!;az.mockImplementation(async args=>args[0]==="acr"?args.includes("digest")?"sha256:"+digest:args.includes("repository")?"false":"":original(args));
-  await expect(mcpRelease("build",input("build",{ownerBaselineConnected:true,baselineReadToolsVerified:true}),dependencies())).resolves.toMatchObject({built:true});
+  await expect(mcpRelease("build",input("build"),dependencies())).resolves.toMatchObject({built:true});
   const builds=execute.mock.calls.filter(c=>c[0]==="docker"&&c[1][0]==="build");expect(builds).toHaveLength(2);expect(builds[0][1]).toContain("Dockerfile");expect(builds[1][1]).toContain("Dockerfile.control-plane");for(const build of builds){const args=build[1];expect(args[args.indexOf("--build-arg")+1]).toBe(`COMMIT_SHA=${sha}`);}expect(mutations()).toHaveLength(0);
-  const saved=JSON.parse(write.mock.calls[0][1]);expect(saved.mcpImage).toBe(image);expect(saved.controlImage).toBe(controlImage);expect(saved.sha).toBe(sha);expect(JSON.stringify(saved)).not.toContain("DO-NOT-PERSIST-SECRET");
+  const saved=JSON.parse(write.mock.calls[0][1]);expect(saved.mcpImage).toBe(image);expect(saved.controlImage).toBe(controlImage);expect(saved.sha).toBe(sha);expect(saved).not.toHaveProperty("ownerBaselineConnected");expect(saved).not.toHaveProperty("baselineReadToolsVerified");expect(smoke).toHaveBeenCalledWith("https://api.monotorr.com","mcp");expect(JSON.stringify(saved)).not.toContain("DO-NOT-PERSIST-SECRET");
  });
  it("invalid fixed linking client stops before migration or control mutation",async()=>{
   const prepare=vi.fn();await expect(mcpRelease("prepare-control",input("prepare-control",{linkingClientId:"bad client"}),{...dependencies(),controlRelease:prepare})).rejects.toThrow("fixed_linking_client_required");expect(prepare).not.toHaveBeenCalled();expect(mutations()).toHaveLength(0);
@@ -199,17 +207,24 @@ describe("explicit MCP delivery boundaries",()=>{
   await expect(mcpRelease("accept-candidate",input("accept-candidate",{acceptance:flags}),dependencies())).resolves.toMatchObject({candidateAcceptanceRecorded:true});expect(mutations()).toHaveLength(0);
   expect(()=>acceptance({...flags,rawBody:"SECRET"})).toThrow();expect(()=>acceptance({...flags,exactReadTools:false})).toThrow();
  });
- it.each(["ownerBaselineConnected","baselineReadToolsVerified","emergencyPilotRollbackApproved"])("cutover fails without %s",async missing=>{
-  const flags={ownerBaselineConnected:true,baselineReadToolsVerified:true,emergencyPilotRollbackApproved:true,[missing]:false};
-  await expect(mcpRelease("cutover",input("cutover",flags),dependencies())).rejects.toThrow("fresh_cutover_owner_approval_required");expect(mutations()).toHaveLength(0);
+ it("cutover still requires explicit pilot rollback approval",async()=>{
+  await expect(mcpRelease("cutover",input("cutover"),dependencies())).rejects.toThrow("pilot_rollback_approval_required");expect(mutations()).toHaveLength(0);
+ });
+ it.each(ACCEPTANCE_KEYS as string[])("cutover still rejects missing candidate acceptance %s without manual baseline inputs",async key=>{
+  delete state.acceptance![key];
+  await expect(mcpRelease("cutover",input("cutover",{emergencyPilotRollbackApproved:true}),dependencies())).rejects.toThrow("candidate_acceptance_incomplete");expect(mutations()).toHaveLength(0);
+ });
+ it("unhealthy production blocks cutover before mutation without manual baseline inputs",async()=>{
+  smoke.mockRejectedValueOnce(new Error("smoke_failed"));
+  await expect(mcpRelease("cutover",input("cutover",{emergencyPilotRollbackApproved:true}),dependencies())).rejects.toThrow("smoke_failed");expect(mutations()).toHaveLength(0);expect(write).not.toHaveBeenCalled();
  });
  it("missing acceptance or changed candidate fails before production mutation",async()=>{
-  delete state.acceptance;await expect(mcpRelease("cutover",input("cutover",{ownerBaselineConnected:true,baselineReadToolsVerified:true,emergencyPilotRollbackApproved:true}),dependencies())).rejects.toThrow("candidate_acceptance_missing");expect(mutations()).toHaveLength(0);
+  delete state.acceptance;await expect(mcpRelease("cutover",input("cutover",{emergencyPilotRollbackApproved:true}),dependencies())).rejects.toThrow("candidate_acceptance_missing");expect(mutations()).toHaveLength(0);
  });
  it("cutover retains rollback evidence before its one production update, without mode/traffic/probe changes",async()=>{
   let changed=false;const original=az.getMockImplementation()!;
   az.mockImplementation(async args=>{if(args.includes("update")){changed=true;return "";}if(changed&&productionRead(args))return productionArm({image,revision:MCP_TARGET+"--s3-"+sha.slice(0,12)});return original(args);});
-  await expect(mcpRelease("cutover",input("cutover",{ownerBaselineConnected:true,baselineReadToolsVerified:true,emergencyPilotRollbackApproved:true}),dependencies())).resolves.toMatchObject({cutoverConfirmed:true});
+  await expect(mcpRelease("cutover",input("cutover",{emergencyPilotRollbackApproved:true}),dependencies())).resolves.toMatchObject({cutoverConfirmed:true});
   expect(mutations()).toHaveLength(1);const args=mutations()[0];expect(args).toContain(MCP_TARGET);expect(args).toContain(image);expect(args).not.toMatchObject(expect.arrayContaining(["--revisions-mode"]));
   expect(args).not.toContain("traffic");expect(args).not.toContain("probe");expect(args).toContain("CW_DB_USER=cw_mcp");expect(args).toContain("--remove-env-vars");
   const saved=JSON.parse(write.mock.calls[0][1]);expect(saved.cutoverStarted).toBe(true);expect(saved.baseline.image).toBe(oldImage);
@@ -218,12 +233,12 @@ describe("explicit MCP delivery boundaries",()=>{
  it("refuses to confirm cutover if protected probes or ingress changed",async()=>{
   let changed=false;const original=az.getMockImplementation()!;
   az.mockImplementation(async args=>{if(args.includes("update")){changed=true;return "";}if(changed&&productionRead(args))return productionArm({image,revision:MCP_TARGET+"--s3-"+sha.slice(0,12),template:{...template,containers:[{...template.containers[0],probes:[{type:"Readiness"}]}]}});return original(args);});
-  await expect(mcpRelease("cutover",input("cutover",{ownerBaselineConnected:true,baselineReadToolsVerified:true,emergencyPilotRollbackApproved:true}),dependencies())).rejects.toThrow("unexpected_runtime_stop_for_operator_review");
+  await expect(mcpRelease("cutover",input("cutover",{emergencyPilotRollbackApproved:true}),dependencies())).rejects.toThrow("unexpected_runtime_stop_for_operator_review");
   expect(mutations()).toHaveLength(1);expect(JSON.parse(write.mock.calls[0][1]).cutoverStarted).toBe(true);
  });
  it("retains evidence on uncertain cutover failure and does not automatically retry or roll back",async()=>{
   const original=az.getMockImplementation()!;az.mockImplementation(async args=>{if(args.includes("update"))throw new Error("timeout");return original(args);});
-  await expect(mcpRelease("cutover",input("cutover",{ownerBaselineConnected:true,baselineReadToolsVerified:true,emergencyPilotRollbackApproved:true}),dependencies())).rejects.toThrow();expect(mutations()).toHaveLength(1);expect(JSON.parse(write.mock.calls[0][1]).cutoverStarted).toBe(true);
+  await expect(mcpRelease("cutover",input("cutover",{emergencyPilotRollbackApproved:true}),dependencies())).rejects.toThrow();expect(mutations()).toHaveLength(1);expect(JSON.parse(write.mock.calls[0][1]).cutoverStarted).toBe(true);
  });
  it("rollback copies only the recorded pilot revision/image, never deletes customer data",async()=>{
   state.cutoverStarted=true;let restored=false;const original=az.getMockImplementation()!;
@@ -304,7 +319,7 @@ describe("canonical semantic release baseline",()=>{
  });
  it("new build declares the version and retains rollback revision/image without secrets",async()=>{
   const original=az.getMockImplementation()!;az.mockImplementation(async args=>args[0]==="acr"?args.includes("digest")?"sha256:"+digest:args.includes("repository")?"false":"":original(args));
-  await mcpRelease("build",input("build",{ownerBaselineConnected:true,baselineReadToolsVerified:true}),dependencies());
+  await mcpRelease("build",input("build"),dependencies());
   const saved=JSON.parse(write.mock.calls[0][1]);
   expect(saved.fingerprintVersion).toBe(FINGERPRINT_VERSION);expect(saved.baseline.fingerprintVersion).toBe(FINGERPRINT_VERSION);
   expect(saved.baseline.revision).toBe(before.revision);expect(saved.baseline.image).toBe(oldImage);
@@ -373,7 +388,7 @@ describe("sanitized MCP candidate failure stages",()=>{
 
 
 describe("bounded exact MCP cutover and recovery readiness",()=>{
- const flags={ownerBaselineConnected:true,baselineReadToolsVerified:true,emergencyPilotRollbackApproved:true};
+ const flags={emergencyPilotRollbackApproved:true};
  const cutoverRevision=MCP_TARGET+"--s3-"+sha.slice(0,12),recoveryRevision=MCP_TARGET+"--s3-recovery-"+sha.slice(0,12);
  function sequence(action:"cutover"|"rollback",states:Record<string,unknown>[],options:{ready?:string;latest?:string;sourceImage?:string;existingRecovery?:boolean;restoredEnv?:boolean;defaults?:boolean}={}){
   if(action==="rollback")state.cutoverStarted=true;
@@ -521,7 +536,7 @@ describe("feature selection retained through promotion and cutover",()=>{
  it("MCP cutover rejects missing or drifted feature evidence before its runtime update",async()=>{
   for(const plan of [undefined,{...schemaPlan,manifestFingerprint:"0".repeat(64)}]){
    Object.assign(state.control!,{schemaPlan:plan});
-   await expect(mcpRelease("cutover",input("cutover",{ownerBaselineConnected:true,baselineReadToolsVerified:true,emergencyPilotRollbackApproved:true}),dependencies())).rejects.toThrow("control_features_changed");
+   await expect(mcpRelease("cutover",input("cutover",{emergencyPilotRollbackApproved:true}),dependencies())).rejects.toThrow("control_features_changed");
    expect(mutations()).toHaveLength(0);
   }
  });
@@ -531,7 +546,7 @@ describe("mandatory serving/rollback compatibility evidence",()=>{
  it.each(["promote-control","cutover"])("%s fails before mutation on incompatible or missing proof",async action=>{
   controlState();state.controlPromoted=true;
   const deps={...controlDependencies(),verifySchemaCompatibility:vi.fn(async()=>{throw new Error("schema_compatibility_unproven");})};
-  await expect(mcpRelease(action,input(action,{ownerBaselineConnected:true,baselineReadToolsVerified:true,emergencyPilotRollbackApproved:true}),deps)).rejects.toThrow("schema_compatibility_unproven");
+  await expect(mcpRelease(action,input(action,{emergencyPilotRollbackApproved:true}),deps)).rejects.toThrow("schema_compatibility_unproven");
   expect(mutations()).toHaveLength(0);
  });
  it("preserves the proof with acceptance through control promotion",async()=>{
